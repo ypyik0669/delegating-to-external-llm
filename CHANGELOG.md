@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.0 — 2026-09-18
+
+### Added
+- **Trigger without a phrase** — `hooks/delegation-context.mjs` on `SessionStart` and `UserPromptSubmit`: when delegation mode is on it injects a one-paragraph reminder every turn (survives compaction), plus setup/codex warnings at session start. `/delegating-to-external-llm:on` and `:off` toggle the switch file that also arms the edit gate. No `~/.claude/CLAUDE.md` edit required any more.
+
+
 ## 2.2.0 — 2026-09-18
 
 Goal: Claude spends tokens only on decisions. Measured on a real repo (supermemory) 2.1 delegated the typing but Claude still did the exploring, supervising and cleanup; 2.2 moves those to the external model or to scripts.
