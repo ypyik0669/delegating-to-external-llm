@@ -98,11 +98,13 @@ node scripts/setup.mjs --base https://relay.example.com --key sk-... --model gpt
 
 Inside Claude Code, `/delegating-to-external-llm:setup` walks you through the same thing (and `--check` re-verifies).
 
-Then turn delegation mode on:
+Then turn delegation mode on. Zero-token way (the `!` prefix runs a shell command without a model turn):
 
 ```
-/delegating-to-external-llm:on
+! node ~/.claude/skills/delegating-to-external-llm/scripts/delegation.mjs on
 ```
+
+(`/delegating-to-external-llm:on` does the same but, like every slash command in Claude Code, costs one model turn.)
 
 From that point every coding task in every session goes through the plugin **without you saying anything**: a `SessionStart`/`UserPromptSubmit` hook injects a one-paragraph reminder each turn (so it survives compaction), and the edit gate blocks Claude from touching repo files by hand. `/delegating-to-external-llm:off` restores normal behaviour. No edit to `~/.claude/CLAUDE.md` is needed.
 

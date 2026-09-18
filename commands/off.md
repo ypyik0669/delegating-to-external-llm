@@ -1,5 +1,5 @@
 ---
-description: Turn delegation mode off — Claude codes normally again and the edit gate is disarmed
+description: Turn delegation mode off (costs one model turn; zero-token way: `! node ${CLAUDE_PLUGIN_ROOT}/scripts/delegation.mjs off`) — Claude codes normally again and the edit gate is disarmed
 ---
 
 Remove the switch file and confirm:

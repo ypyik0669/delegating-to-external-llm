@@ -98,11 +98,13 @@ node scripts/setup.mjs --base https://relay.example.com --key sk-... --model gpt
 
 在 Claude Code 内也可以用 `/delegating-to-external-llm:setup` 走同样流程（`--check` 只做复验）。
 
-然后打开委托模式：
+然后打开委托模式。零 token 的方式（`!` 前缀直接跑 shell，不经过模型）：
 
 ```
-/delegating-to-external-llm:on
+! node ~/.claude/skills/delegating-to-external-llm/scripts/delegation.mjs on
 ```
+
+（`/delegating-to-external-llm:on` 效果相同，但和 Claude Code 里所有斜杠命令一样要花一次模型回合。）
 
 从此每个会话里的每个编码任务都自动走插件，**你不用再说任何话**：`SessionStart`/`UserPromptSubmit` 钩子每轮注入一段简短提醒（所以压缩后也有效），编辑门禁拦住 Claude 手改仓库文件。`/delegating-to-external-llm:off` 恢复正常。不需要改 `~/.claude/CLAUDE.md`。
 
