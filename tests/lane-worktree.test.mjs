@@ -14,9 +14,7 @@ fs.mkdirSync(repo);
 const git = (...a) => spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: repo, encoding: "utf8" });
 const wt = (...a) => spawnSync("bash", [script, ...a], { cwd: repo, encoding: "utf8" });
 const write = (p, s) => fs.writeFileSync(path.join(repo, p), s);
-const read = (p) => fs.readFileSync(path.join(repo, p), "utf8").replace(/
-/g, "
-");
+const read = (p) => fs.readFileSync(path.join(repo, p), "utf8").replace(/\r\n/g, "\n");
 
 git("init", "-q", "-b", "main"); git("config", "core.autocrlf", "false");
 write("a.txt", "a\n"); write("b.txt", "b\n"); write("hot.txt", "shared\n");
