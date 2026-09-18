@@ -28,7 +28,7 @@ Every background notification re-enters your whole context. Delegation is cheap 
 
 1. Start delegation in a fresh session, or run `/compact` before the first lane. Do not delegate from a session that just did hours of unrelated work.
 2. `/effort low` for orchestration turns; raise it only for a spec you find hard to approve or a verdict that deserves it.
-3. Prefer **one** `lane-run.mjs --batch` call over several agents: you are woken once with all reports instead of once per lane.
+3. Prefer **one** `lane-run.mjs --batch` call over several agents, and run it with the Bash tool's `run_in_background: true`: the harness wakes you exactly once when it finishes. **Never poll with `sleep`** — every poll is a full-context turn; a 40-minute lane polled every 9 minutes cost 2.4M cached tokens in testing.
 4. Never paste diffs, briefs, or reports back into the conversation. Cite paths and counts.
 
 ## The workflow
@@ -63,6 +63,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/lane-run.mjs" --spec spec.md --max-resumes 2
 node "${CLAUDE_PLUGIN_ROOT}/scripts/lane-run.mjs" --batch a.md b.md c.md      # parallel, one wake-up
 ```
 
+Lanes take 10–40 minutes. Launch the call with `run_in_background: true` (Bash timeout 3600000) and do nothing until the completion notification arrives; the analyze lane is the same. No `sleep` loops, no polling of log files.
+
 The driver lints the spec, runs `codex-lane.sh` (relay model via codex, private `CODEX_HOME`, permission level from `LLM_CODEX_ACCESS`, edits fenced to FILES, stray writes to the main tree moved back into the worktree), re-runs every VERIFICATION command itself, resumes the same codex session with the failing output up to `--max-resumes` times, checks lockfile churn, and prints a LANE REPORT. Exit 0 = `complete`, 5 = `partial`, 2 = `refused`/`unavailable`.
 
 Call it from Bash directly. Use the `codex-implementer` agent only to keep a very long report out of your context; it adds nothing else.
@@ -79,7 +81,7 @@ node  "${CLAUDE_PLUGIN_ROOT}/scripts/lane-run.mjs" --batch <specs…>
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/lane-worktree.sh" merge <slug>     # commits the lane's work, dry-run-checks, merges --no-commit
 ```
 
-Merge serially, as soon as each lane is `complete`; a conflict goes back to that lane as a corrected spec. Run the cross-cutting verification on the merged tree before the review. Only the user commits.
+Merge serially, as soon as each lane is `complete`; `merge` stashes whatever is already in the main tree (an earlier lane's result) around the merge, so you never need WIP commits. A conflict goes back to that lane as a corrected spec. Run the cross-cutting verification on the merged tree before the review. Only the user commits.
 
 ### 5. Review — cross-vendor first, Claude verdict second
 
