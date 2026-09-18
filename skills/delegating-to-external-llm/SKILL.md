@@ -18,7 +18,7 @@ Models: the lanes run whatever `LLM_MODEL` names in `~/.claude/llm-relay.env` (g
 - User says the external model must do the work, or that you must only orchestrate
 - User names the lane model (gpt-6-astra, codex, "the GPT relay") or a reasoning effort
 - User complains the ledger shows too few calls, too little spend, or too much Claude spend
-- Delegation mode is on (`/delegating-to-external-llm:on`; the hook reminder appears at the top of the turn) — then every coding task, no phrase needed
+- The plugin is enabled (the hook reminder appears at the top of the turn) — then every coding task, no phrase needed
 
 Not for: answering questions, planning, reading reports. Those are yours.
 
@@ -150,4 +150,4 @@ ROUNDS: n — fresh in=… out=… → ran | resume … / SESSION: <thread id> /
 1. `node "${CLAUDE_PLUGIN_ROOT}/scripts/setup.mjs"` (or `/delegating-to-external-llm:setup`): relay base URL, API key (echo off), model, default effort, minimum request size, codex permission level (`workspace` default, `workspace-net`, `yolo`). Writes `~/.claude/llm-relay.env` (mode 600) and smoke-tests.
 2. `npm i -g @openai/codex@latest` (≥ 0.155). No `codex login`: the lane points codex at the relay, under a private `~/.claude/llm-codex-home` seeded from `codex-home/config.toml` — your `~/.codex` (MCP servers, AGENTS.md, profiles) never loads into a lane.
 3. Optional prices for USD in the ledger: `LLM_PRICE_IN/CACHED/OUT`, `CLAUDE_PRICE_IN/OUT` in the env file.
-4. `! node "${CLAUDE_PLUGIN_ROOT}/scripts/delegation.mjs" on` (zero-token) or `/delegating-to-external-llm:on` — turns delegation mode on for the machine: a plugin hook injects a one-paragraph reminder on session start and on every prompt, so no trigger phrase is needed and it survives compaction; the same switch arms the edit gate. `/delegating-to-external-llm:off` reverses it. (Editing `~/.claude/CLAUDE.md` is no longer required; a line there is an optional belt-and-braces.)
+4. Nothing else: with the plugin enabled, a hook injects a one-paragraph reminder on session start and on every prompt (no trigger phrase, survives compaction) and the edit gate is armed. To code normally, disable the plugin. (Editing `~/.claude/CLAUDE.md` is not required.)

@@ -1,12 +1,12 @@
 # Hooks
 
-Three hooks, all keyed to one switch: `~/.claude/llm-delegation.on` (or `LLM_DELEGATION=1`), toggled by `/delegating-to-external-llm:on` and `:off`.
+Installed plugin = delegation on. There is no switch: to code normally, disable the plugin (`/plugin` → disable, or `claude plugin disable delegating-to-external-llm`). `LLM_DELEGATION=0` in the environment silences both hooks for one session (used by the tests).
 
 ## Trigger without a phrase — `delegation-context.mjs`
 
-`SessionStart` and `UserPromptSubmit` hook. When the switch is on it prints a one-paragraph reminder that Claude Code adds to the turn's context: route coding work through the skill, don't read source, don't edit. Session start also warns if the relay isn't configured or codex is missing. When the switch is off it prints nothing. This replaces the old advice to edit `~/.claude/CLAUDE.md`; the reminder is re-injected every turn, so it survives compaction.
+`SessionStart` and `UserPromptSubmit` hook. Prints a one-paragraph reminder that Claude Code adds to the turn's context: route coding work through the skill, don't read source, don't edit. Session start also warns if the relay isn't configured or codex is missing. Re-injected every turn, so it survives compaction.
 
-## Optional hard enforcement — `block-direct-edits.mjs`
+## Hard enforcement — `block-direct-edits.mjs`
 
 The skill makes the architect *want* to delegate. This hook makes it *unable* to write repo code by hand while delegation mode is on.
 
@@ -18,10 +18,9 @@ When delegation mode is on it blocks writes to files under the current repo unle
 
 When delegation mode is off the hook exits immediately and does nothing.
 
-## Turn it on / off
+## Turn it off
 
-- `/delegating-to-external-llm:on` (= `touch ~/.claude/llm-delegation.on`; or export `LLM_DELEGATION=1` before starting Claude Code).
-- `/delegating-to-external-llm:off` (= `rm ~/.claude/llm-delegation.on`).
+Disable the plugin. For a single session: start Claude Code with `LLM_DELEGATION=0`.
 
 Hook changes take effect on the next session.
 

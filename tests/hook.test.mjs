@@ -9,7 +9,7 @@ const repo = path.join(os.tmpdir(), "dtel-hook-fakerepo");
 const slug = repo.replace(/[^A-Za-z0-9]/g, "-");
 const scratch = path.join(os.tmpdir(), "claude", slug);
 const otherScratch = path.join(os.tmpdir(), "claude", slug + "-other");
-const on = { LLM_DELEGATION: "1" };
+const on = {};
 const off = { LLM_DELEGATION: "0" };
 const edit = (file_path, cwd = repo) => ({ tool_name: "Edit", cwd, tool_input: { file_path } });
 

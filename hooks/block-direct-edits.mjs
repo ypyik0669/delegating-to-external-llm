@@ -3,8 +3,7 @@
 // unless an external-model output file exists for this project. This turns
 // "the brain does not code" from a memory into a mechanism.
 //
-// Delegation mode is on when LLM_DELEGATION=1 is set or ~/.claude/llm-delegation.on exists.
-// Off → the hook is a no-op.
+// Active whenever the plugin is enabled; LLM_DELEGATION=0 disables it (tests / one-off sessions).
 //
 // Evidence: a file named *.llm-output.* written within the last 30 minutes under
 // the *current project's* scratch root, i.e. <tmp>/claude/<project-slug>/…, where
@@ -27,8 +26,7 @@ export function decide(input, env = process.env, now = Date.now()) {
   const tool = input.tool_name || "";
   if (!/^(Edit|Write|NotebookEdit)$/.test(tool)) return null;
 
-  const onFile = path.join(os.homedir(), ".claude", "llm-delegation.on");
-  const active = env.LLM_DELEGATION === "1" || (env.LLM_DELEGATION !== "0" && fs.existsSync(onFile));
+  const active = env.LLM_DELEGATION !== "0";
   if (!active) return null;
 
   const cwd = path.resolve(String(input.cwd || process.cwd()));

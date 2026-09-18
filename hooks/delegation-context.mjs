@@ -1,8 +1,7 @@
 #!/usr/bin/env node
-// UserPromptSubmit / SessionStart hook: when delegation mode is on, inject a short reminder so
-// Claude routes coding work through the plugin without the user having to say so each time.
-// Delegation mode = ~/.claude/llm-delegation.on exists (toggle with /delegating-to-external-llm:on|off)
-// or LLM_DELEGATION=1. Off → prints nothing. Kept to a few dozen tokens: it is added to every turn.
+// UserPromptSubmit / SessionStart hook: inject a short reminder so Claude routes coding work through
+// the plugin without the user having to say so. Installed plugin = delegation on; disable the plugin
+// to turn it off. LLM_DELEGATION=0 silences it (tests / one-off sessions). A few dozen tokens per turn.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,14 +9,14 @@ import { spawnSync } from "node:child_process";
 
 export function status(env = process.env) {
   const home = os.homedir();
-  const on = env.LLM_DELEGATION === "1" || (env.LLM_DELEGATION !== "0" && fs.existsSync(path.join(home, ".claude", "llm-delegation.on")));
+  const on = env.LLM_DELEGATION !== "0";
   const relay = fs.existsSync(path.join(home, ".claude", "llm-relay.env"));
   return { on, relay };
 }
 
 export function message(event, st, codexPresent) {
   if (!st.on) return "";
-  const core = "[delegating-to-external-llm] Delegation mode is ON: for any coding work in this turn (implement, fix, refactor, add tests) use the delegating-to-external-llm:delegating-to-external-llm skill — analyze lane → spec → lane-run.mjs → llm-advisor. Do not read source to learn the codebase, do not edit repo files yourself, do not launch Explore agents for what the analyze lane can answer. Questions, planning and reviewing reports stay with you. `/delegating-to-external-llm:off` turns this off.";
+  const core = "[delegating-to-external-llm] Delegation mode is ON: for any coding work in this turn (implement, fix, refactor, add tests) use the delegating-to-external-llm:delegating-to-external-llm skill — analyze lane → spec → lane-run.mjs → llm-advisor. Do not read source to learn the codebase, do not edit repo files yourself, do not launch Explore agents for what the analyze lane can answer. Questions, planning and reviewing reports stay with you. (Installed plugin = delegation on; disable the plugin to code normally.)";
   if (event !== "SessionStart") return core;
   const parts = [core];
   if (!st.relay) parts.push("Relay is NOT configured — tell the user to run /delegating-to-external-llm:setup before delegating.");
