@@ -98,15 +98,7 @@ node scripts/setup.mjs --base https://relay.example.com --key sk-... --model gpt
 
 Inside Claude Code, `/delegating-to-external-llm:setup` walks you through the same thing (and `--check` re-verifies).
 
-Then turn delegation mode on. Zero-token way (the `!` prefix runs a shell command without a model turn):
-
-```
-! node ~/.claude/skills/delegating-to-external-llm/scripts/delegation.mjs on
-```
-
-(`/delegating-to-external-llm:on` does the same but, like every slash command in Claude Code, costs one model turn.)
-
-From that point every coding task in every session goes through the plugin **without you saying anything**: a `SessionStart`/`UserPromptSubmit` hook injects a one-paragraph reminder each turn (so it survives compaction), and the edit gate blocks Claude from touching repo files by hand. `/delegating-to-external-llm:off` restores normal behaviour. No edit to `~/.claude/CLAUDE.md` is needed.
+That's it. **Installed = on.** Every coding task in every session goes through the plugin without you saying anything: a `SessionStart`/`UserPromptSubmit` hook injects a one-paragraph reminder each turn (so it survives compaction), and the edit gate blocks Claude from touching repo files by hand. To code normally again, disable the plugin (`/plugin` → disable). No edit to `~/.claude/CLAUDE.md` is needed.
 
 ## Use
 
@@ -161,17 +153,12 @@ File sets must be disjoint and hotspot files (routes, config, registries, manife
 
 Every lane call appends to `~/.claude/llm-usage.jsonl`. `node scripts/usage.mjs --since 24h` (or `/delegating-to-external-llm:usage`) shows calls, prompt / cached / output tokens and wall time by lane, status and project, plus a **`claude : external` ratio** — record Claude-side subagent spend with `usage.mjs --claude-in <n> --claude-out <n>` so the ratio is honest. Set `LLM_PRICE_*` / `CLAUDE_PRICE_*` in the env file for USD.
 
-## Delegation mode switch and hooks
+## Hooks
 
-One switch (`~/.claude/llm-delegation.on`, toggled by `:on` / `:off`) drives three plugin hooks:
+Three plugin hooks, active whenever the plugin is enabled (`LLM_DELEGATION=0` silences them for one session):
 
-- `delegation-context.mjs` (`SessionStart`, `UserPromptSubmit`) — injects the per-turn reminder; at session start also warns if the relay is unconfigured or codex is missing. Prints nothing when the switch is off.
+- `delegation-context.mjs` (`SessionStart`, `UserPromptSubmit`) — injects the per-turn reminder; at session start also warns if the relay is unconfigured or codex is missing.
 - `block-direct-edits.mjs` (`PreToolUse`) — blocks Edit / Write / NotebookEdit on repository files from the main session unless a fresh external-model output exists for the current project.
-
-```
-/delegating-to-external-llm:on     # = touch ~/.claude/llm-delegation.on
-/delegating-to-external-llm:off    # = rm ~/.claude/llm-delegation.on
-```
 
 See [hooks/README.md](hooks/README.md).
 
@@ -209,8 +196,8 @@ skills/delegating-to-external-llm/SKILL.md     routing doctrine, spec contract, 
 agents/codex-implementer.md                    agentic lane (codex exec over your relay)
 agents/relay-implementer.md                    chat lane (llm.mjs, verbatim apply, four-phase)
 agents/llm-advisor.md                          read-only Claude reviewer
-commands/setup, usage, lane, analyze, on, off  /delegating-to-external-llm:setup, :usage, :lane, :analyze, :on, :off
-hooks/delegation-context.mjs                   per-turn reminder when delegation mode is on (no trigger phrase needed)
+commands/setup, usage, lane, analyze           /delegating-to-external-llm:setup, :usage, :lane, :analyze
+hooks/delegation-context.mjs                   per-turn reminder (no trigger phrase needed)
 agents/codex-analyst.md                        thin wrapper: analyze lane
 scripts/lane-run.mjs                           deterministic lane driver (lint → codex → verify → resume → report; --batch; --analyze)
 codex-home/config.toml                         template for the lanes' private CODEX_HOME

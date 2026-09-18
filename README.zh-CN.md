@@ -98,15 +98,7 @@ node scripts/setup.mjs --base https://relay.example.com --key sk-... --model gpt
 
 在 Claude Code 内也可以用 `/delegating-to-external-llm:setup` 走同样流程（`--check` 只做复验）。
 
-然后打开委托模式。零 token 的方式（`!` 前缀直接跑 shell，不经过模型）：
-
-```
-! node ~/.claude/skills/delegating-to-external-llm/scripts/delegation.mjs on
-```
-
-（`/delegating-to-external-llm:on` 效果相同，但和 Claude Code 里所有斜杠命令一样要花一次模型回合。）
-
-从此每个会话里的每个编码任务都自动走插件，**你不用再说任何话**：`SessionStart`/`UserPromptSubmit` 钩子每轮注入一段简短提醒（所以压缩后也有效），编辑门禁拦住 Claude 手改仓库文件。`/delegating-to-external-llm:off` 恢复正常。不需要改 `~/.claude/CLAUDE.md`。
+到此结束。**装上即开启。** 每个会话里的每个编码任务都自动走插件，你不用再说任何话：`SessionStart`/`UserPromptSubmit` 钩子每轮注入一段简短提醒（所以压缩后也有效），编辑门禁拦住 Claude 手改仓库文件。想恢复正常编码，在 `/plugin` 里禁用插件即可。不需要改 `~/.claude/CLAUDE.md`。
 
 ## 使用
 
@@ -161,17 +153,12 @@ bash scripts/lane-worktree.sh cleanup
 
 每次通道调用追加到 `~/.claude/llm-usage.jsonl`。`node scripts/usage.mjs --since 24h`（或 `/delegating-to-external-llm:usage`）按通道、状态、项目汇总调用数、prompt / cached / output token 和耗时，并给出 **`claude : external` 比例**；用 `usage.mjs --claude-in <n> --claude-out <n>` 记录 Claude 侧子代理消耗，比例才诚实。env 里设 `LLM_PRICE_*` / `CLAUDE_PRICE_*` 可显示美元。
 
-## 委托模式开关与钩子
+## 钩子
 
-一个开关文件（`~/.claude/llm-delegation.on`，由 `:on` / `:off` 切换）驱动插件的三个钩子：
+插件启用时三个钩子始终生效（`LLM_DELEGATION=0` 可让单个会话静默）：
 
-- `delegation-context.mjs`（`SessionStart`、`UserPromptSubmit`）——每轮注入提醒；会话开始时若中转未配置或缺 codex 会额外提示。开关关闭时什么都不输出。
+- `delegation-context.mjs`（`SessionStart`、`UserPromptSubmit`）——每轮注入提醒；会话开始时若中转未配置或缺 codex 会额外提示。
 - `block-direct-edits.mjs`（`PreToolUse`）——拦截主会话对仓库文件的 Edit / Write / NotebookEdit，除非当前项目存在新鲜的外部模型输出文件。
-
-```
-/delegating-to-external-llm:on     # 等于 touch ~/.claude/llm-delegation.on
-/delegating-to-external-llm:off    # 等于 rm ~/.claude/llm-delegation.on
-```
 
 详见 [hooks/README.md](hooks/README.md)。
 
@@ -209,8 +196,8 @@ skills/delegating-to-external-llm/SKILL.md     路由准则、spec 合同、报�
 agents/codex-implementer.md                    agentic 通道（codex exec 走你的中转）
 agents/relay-implementer.md                    chat 通道（llm.mjs，逐字应用，四阶段）
 agents/llm-advisor.md                          只读 Claude 评审
-commands/setup, usage, lane, analyze, on, off  /delegating-to-external-llm:setup、:usage、:lane、:analyze、:on、:off
-hooks/delegation-context.mjs                   委托模式开启时每轮注入提醒（无需触发词）
+commands/setup, usage, lane, analyze           /delegating-to-external-llm:setup、:usage、:lane、:analyze
+hooks/delegation-context.mjs                   每轮注入提醒（无需触发词）
 agents/codex-analyst.md                        薄包装：分析通道
 scripts/lane-run.mjs                           确定性通道驱动（lint → codex → 验证 → 续跑 → 报告；--batch；--analyze）
 codex-home/config.toml                         通道私有 CODEX_HOME 的模板

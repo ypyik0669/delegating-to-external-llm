@@ -1,10 +1,9 @@
 # Changelog
 
-## 2.3.0 — 2026-09-18
+## 2.3.0 — 2026-09-19
 
-### Added
-- `scripts/delegation.mjs on|off|status` — toggle the switch from `!` shell mode with zero model tokens; the slash commands stay as a convenience but cost one turn.
-- **Trigger without a phrase** — `hooks/delegation-context.mjs` on `SessionStart` and `UserPromptSubmit`: when delegation mode is on it injects a one-paragraph reminder every turn (survives compaction), plus setup/codex warnings at session start. `/delegating-to-external-llm:on` and `:off` toggle the switch file that also arms the edit gate. No `~/.claude/CLAUDE.md` edit required any more.
+### Changed
+- **Installed = on.** No switch file, no `:on`/`:off` commands (a slash command costs a model turn anyway). `hooks/delegation-context.mjs` on `SessionStart` and `UserPromptSubmit` injects a one-paragraph reminder every turn (survives compaction) plus setup/codex warnings at session start; the edit gate is always armed. To code normally, disable the plugin. `LLM_DELEGATION=0` silences both hooks for one session. No `~/.claude/CLAUDE.md` edit required.
 
 
 ## 2.2.0 — 2026-09-18
