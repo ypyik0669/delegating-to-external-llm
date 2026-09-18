@@ -28,7 +28,7 @@ export function decide(input, env = process.env, now = Date.now()) {
   if (!/^(Edit|Write|NotebookEdit)$/.test(tool)) return null;
 
   const onFile = path.join(os.homedir(), ".claude", "llm-delegation.on");
-  const active = env.LLM_DELEGATION === "1" || fs.existsSync(onFile);
+  const active = env.LLM_DELEGATION === "1" || (env.LLM_DELEGATION !== "0" && fs.existsSync(onFile));
   if (!active) return null;
 
   const cwd = path.resolve(String(input.cwd || process.cwd()));

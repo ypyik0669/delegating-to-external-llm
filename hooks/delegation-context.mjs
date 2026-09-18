@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 
 export function status(env = process.env) {
   const home = os.homedir();
-  const on = env.LLM_DELEGATION === "1" || fs.existsSync(path.join(home, ".claude", "llm-delegation.on"));
+  const on = env.LLM_DELEGATION === "1" || (env.LLM_DELEGATION !== "0" && fs.existsSync(path.join(home, ".claude", "llm-delegation.on")));
   const relay = fs.existsSync(path.join(home, ".claude", "llm-relay.env"));
   return { on, relay };
 }
