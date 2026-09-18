@@ -1,0 +1,19 @@
+{
+  "name": "delegating-to-external-llm",
+  "version": "2.0.0",
+  "description": "Claude is the architect: it writes specs and verdicts and picks a reasoning effort per task. gpt-6-astra on an OpenAI-compatible relay does all the implementation — agentically through the Codex CLI by default, or as chat completions applied verbatim as the fallback — and a clean-context Claude advisor reviews every deliverable before it ships.",
+  "author": {
+    "name": "YPY"
+  },
+  "license": "MIT",
+  "keywords": [
+    "agents",
+    "model-routing",
+    "orchestration",
+    "architect",
+    "codex",
+    "relay",
+    "reasoning-effort",
+    "delegation"
+  ]
+}

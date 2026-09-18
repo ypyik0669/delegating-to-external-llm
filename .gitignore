@@ -1,0 +1,14 @@
+# relay credentials live in ~/.claude/llm-relay.env, never here
+llm-relay.env
+*.env
+!llm-relay.env.example
+
+# lane artefacts
+*.llm-output.*
+*.prompt.md
+codex-spec.*
+codex-final.*
+
+node_modules/
+.DS_Store
+Thumbs.db

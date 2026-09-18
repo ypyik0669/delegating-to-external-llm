@@ -1,0 +1,17 @@
+{
+  "name": "delegating-to-external-llm",
+  "metadata": {
+    "description": "Architect-as-orchestrator for Claude Code: Claude writes specs and verdicts, an external model on your own OpenAI-compatible relay writes all the code (agentically via the Codex CLI, or as chat completions), and a clean-context Claude advisor reviews every deliverable."
+  },
+  "owner": {
+    "name": "ypyik0669",
+    "url": "https://github.com/ypyik0669"
+  },
+  "plugins": [
+    {
+      "name": "delegating-to-external-llm",
+      "source": "./",
+      "description": "Claude is only the brain: every implementation task is routed to gpt-6-astra (or any model) on your relay with a per-task reasoning effort, verified by re-running tests, and reviewed by llm-advisor before it ships."
+    }
+  ]
+}
