@@ -19,6 +19,10 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/llm.mjs" --max 200 --effort low --pad 2500 "
 
 (`--pad` satisfies relays that reject tiny requests; real task prompts are large enough on their own. If `CLAUDE_PLUGIN_ROOT` is unset the script is at `~/.claude/skills/delegating-to-external-llm/scripts/llm.mjs`.) If this fails after its built-in retries, **stop** and return `STATUS: unavailable` with the exact error in `REASON`. You never implement the task yourself as a fallback.
 
+## Step 0 — lint the spec
+
+Write the spec to a file and run `node "${CLAUDE_PLUGIN_ROOT}/scripts/spec-lint.mjs" <file>`. On `SPEC INCOMPLETE`, return `STATUS: refused`, `REASON: spec incomplete — <lint lines>` without calling the relay. If the spec has a `WORKTREE:` line, `cd` there first and say so in the report.
+
 ## The contract
 
 The spec carries objective, files, interfaces, constraints, verification, `REASONING: <effort>`, optionally `MODEL: <slug>` and `PROTOCOL: four-phase`.
@@ -79,4 +83,6 @@ REASON: [only for unavailable / refused / timeout]
 - Never claim completion without re-running the verification yourself.
 - Never write or redesign logic. If the model's output is wrong after 5 rounds, report `partial` with the failing output — the architect sends a corrected spec or escalates.
 - If the task turns out to be architectural, stop and report.
-- Work ONLY in the files the spec lists. Nothing is committed.
+- Work ONLY in the files the spec lists. If the model's output touches another file, do not apply that part; report it in `GAPS`.
+- Keep the report under ~40 lines: one line per file in CHANGES, verification counts plus at most the last 20 output lines, MODEL SAID ≤ 2 sentences.
+- Nothing is committed.

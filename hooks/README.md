@@ -20,4 +20,4 @@ Hook changes take effect on the next session.
 ## Caveats
 
 - A determined agent could create a fake `*.llm-output.*` file. The hook stops the default drift ("I'll just do it myself"), not adversarial behaviour.
-- The scratch root is derived from the hook's `cwd`; if a subagent runs with a different cwd than the session, evidence written by one won't unlock the other. Keep lanes in the repo root.
+- The scratch root is derived from the hook's `cwd`, plus its parent and grandparent so a lane running inside `<repo>/.lanes/<slug>` (see `scripts/lane-worktree.sh`) finds the main project's evidence. Other cwd layouts won't match.

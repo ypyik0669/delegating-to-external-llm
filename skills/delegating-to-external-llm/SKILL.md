@@ -1,6 +1,6 @@
 ---
 name: delegating-to-external-llm
-description: Use when the user wants coding work done by an external model instead of by you — "delegate all coding", "you are only the brain", "use GPT / codex / gpt-6-astra to do it", or when the relay usage log shows the external model was barely used. Routes every implementation task to gpt-6-astra on the relay, either agentically through the codex CLI (default) or as chat completions applied verbatim (fallback / four-phase trail), with a per-task reasoning effort and a clean-context Claude review before anything ships.
+description: Use when the user wants coding work done by an external model instead of by you — "delegate all coding", "you are only the brain", "only orchestrate", "don't write code yourself", "use GPT / codex / gpt-6-astra / the relay to do it", "让外部模型写", "用 GPT 做" — or when the usage ledger shows the external model was barely used. Routes every implementation task to gpt-6-astra on the relay, either agentically through the codex CLI (default) or as chat completions applied verbatim (fallback / four-phase trail), with a per-task reasoning effort and a clean-context Claude review before anything ships.
 ---
 
 # Delegating to an External LLM — the architect's routing doctrine
@@ -24,7 +24,7 @@ Not for: answering questions, planning, reading reports. Those are yours.
 
 **Emit judgment, not volume.** Your output is decomposition, specs, routing decisions, verdicts on diffs, and short reports. A code block longer than an interface signature or a few illustrative lines is a spec that hasn't been delegated yet — stop and delegate it. Fixing a lane's bug by hand is the same failure in disguise: send a corrected spec back to the lane.
 
-**Keep the context lean.** Delegate broad exploration and log-grepping to a cheap read-only agent and keep only the conclusions. Read files yourself only when the decision depends on the exact code. Don't paste long files or full diffs into the conversation when a path or an excerpt will do.
+**Keep the context lean.** Delegate broad exploration and log-grepping to a cheap read-only agent and keep only the conclusions. Read files yourself only when the decision depends on the exact code. Don't paste long files or full diffs into the conversation when a path or an excerpt will do. After reading a LANE REPORT, cite paths and counts — never re-paste the diff. Every lane report is capped at ~40 lines for the same reason.
 
 **Reason once, then hand off.** Do the hard thinking — architecture, interfaces, the debugging hypothesis — in one pass, capture it in the spec, and let the lane carry it. Re-deriving decisions across turns burns the premium twice.
 
@@ -34,7 +34,7 @@ What stays with the architect regardless of cost: decomposition, interface desig
 
 | Lane | Producer | Invoke | Route here when |
 |---|---|---|---|
-| Agentic (default) | gpt-6-astra via `codex exec`, served by the relay (effort per task) | `codex-implementer` agent | Any implementation task. The model reads, edits and runs the verification itself inside a workspace sandbox. Requires the codex CLI + `~/.claude/llm-relay.env`. |
+| Agentic (default) | gpt-6-astra via `codex exec`, served by the relay (effort per task; permission level from `LLM_CODEX_ACCESS`: workspace / workspace-net / yolo) | `codex-implementer` agent | Any implementation task. The model reads, edits and runs the verification itself; edits are fenced to the spec's FILES; retries resume the same codex session. Requires the codex CLI + `~/.claude/llm-relay.env`. |
 | Chat / fallback | gpt-6-astra via `llm.mjs` chat completions (effort per task, default `xhigh`) | `relay-implementer` agent | codex reported `unavailable`; the agentic lane has failed the task twice; or you want the audited four-call trail (`PROTOCOL: four-phase`) for a hard, judgment-heavy task. The lane applies the model's text verbatim. |
 | Review | Claude (inherits session effort) | `llm-advisor` agent | Not an implementation lane. Commitment boundaries and the mandatory end-of-deliverable review. |
 
@@ -77,9 +77,16 @@ Optional lines:
 
 A spec you can't finish writing is a signal the decision isn't made yet — that's architect work, not a reason to hand the ambiguity to a cheaper model.
 
-## Parallelism
+## Parallelism — one worktree per lane
 
-Independent specs (no shared files, no ordering dependency) launch as parallel agents in a single message. Sequential chains and single-file surgery stay serial. For high-stakes work, run both lanes on the same spec and pick the stronger diff.
+Worktrees solve file-system isolation, not coordination. Both are needed:
+
+1. **Decompose by domain, not by verb.** Two specs that both "improve checkout" will collide even in separate worktrees. File sets must be disjoint, and **hotspot files** (routes, config, registries, dependency manifests, shared types) belong to exactly one spec. If two tasks both need a hotspot, they are one task, or sequential.
+2. **Create a worktree per lane** from the main tree: `bash "${CLAUDE_PLUGIN_ROOT}/scripts/lane-worktree.sh" create <slug>` prints the path; put it in the spec as `WORKTREE: <path>`. Launch the agents in a single message.
+3. **Check before merge, merge serially.** After each lane reports `complete`: `lane-worktree.sh check <slug>` (dry-run merge; lists conflicting files) then `lane-worktree.sh merge <slug>` (merges without committing, removes the worktree). Late-caught conflicts lower pass rates the most, so check as soon as a lane finishes rather than after all of them. A conflict goes back to that lane as a corrected spec — you do not resolve it by hand.
+4. **Run the cross-cutting verification on the merged tree** before the advisor review. Only the user commits.
+
+Sequential chains and single-file surgery stay serial in the main tree. For high-stakes work, run both lanes on the same spec (separate worktrees) and pick the stronger diff. Use `lane-worktree.sh cleanup` when done.
 
 ## Commitment boundaries and the final review
 
@@ -95,11 +102,11 @@ The advisor is the same model family as you; it is a fresh-eyes check, not an in
 
 Reports are claims, not evidence. Before accepting any lane's work: read the diff, and re-run the verification command (or spot-check its quoted output against the working tree). "Should work" or a report with no command output means the task is not done. **An empty diff with a clean exit is a refusal, not a success** — lanes report it as `refused`; treat it as one. A lane that reports a spec gap gets a corrected spec, not "use your judgment".
 
-Report to the user with: lanes used, effort per task, `STATUS` per lane, verbatim test counts, relay rounds / codex runs, and the advisor's verdict.
+Report to the user with: lanes used, effort per task, `STATUS` per lane, verbatim test counts, relay rounds / codex runs, the advisor's verdict, and the ledger line for this session: `node "${CLAUDE_PLUGIN_ROOT}/scripts/usage.mjs" --since 1h` (calls / tokens per lane). `/delegating-to-external-llm:usage` shows the same to the user on demand.
 
 ## Lane report format
 
-Every implementation lane returns exactly this:
+Every implementation lane returns exactly this, capped at ~40 lines (one line per file, verification counts + ≤ 20 output lines, MODEL SAID ≤ 2 sentences):
 
 ```
 LANE REPORT
@@ -141,6 +148,8 @@ REASON: [only for unavailable / refused / timeout — exact error or the model's
 - Two lanes editing the same file in parallel. Assign disjoint files.
 - Attaching a 4,000-line file to the relay every round. Extract ranges with real line numbers.
 - Trusting "all green" without the verbatim counts. Require them.
+- Accepting a `SCOPE VIOLATION` silently. A lane that touched a file outside FILES reports `partial`; you decide whether to widen the spec or send it back.
+- Sending an incomplete spec and hoping. Lanes lint it and refuse; write the missing part instead.
 - Accepting `exit 0` from codex as success. Check the diff.
 - Forgetting CRLF: on Windows repos the relay lane must normalize anchors before Edit.
 - Sending secrets, screenshots, or customer data through a lane. Source code only, and only what the user accepted.
@@ -151,6 +160,7 @@ REASON: [only for unavailable / refused / timeout — exact error or the model's
 2. Agentic lane: `npm i -g @openai/codex@latest` (≥ 0.155; no `codex login` needed — the lane script points codex at the relay using the same env file). Smoke test from any git repo with a spec that says "reply OK, change nothing": expect `STATUS: refused` (correct: nothing changed) and "OK" in the final message.
 3. Make the rule survive compaction — in `~/.claude/CLAUDE.md`: `When delegation to the external LLM is active, use the delegating-to-external-llm:delegating-to-external-llm skill for every coding task.`
 4. Optional hard enforcement: see `hooks/README.md`.
+5. codex permission level: `LLM_CODEX_ACCESS=workspace` (repo-only, no network — default), `workspace-net` (repo + network), or `yolo` (no sandbox, no approval prompts — the model can do anything the user's account can). Set by `setup.mjs`; the user's choice, never yours.
 
 Quick reference for the relay CLI:
 

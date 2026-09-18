@@ -16,17 +16,21 @@ CONSTRAINTS:
 
 VERIFICATION:
 <exact command(s) that prove it works, e.g. `npm test -- src/foo.test.ts` and `npx tsc --noEmit`;
- expected outcome, e.g. "3 passing, 0 failing">
+ expected outcome, e.g. "3 passing, 0 failing". Best completion signal: a test that fails before the change
+ and passes after — name it, or ask the lane to add one first>
 
-REASONING: low | medium | high | xhigh | max
+REASONING: low | medium | high | xhigh
 MODEL: <optional slug override>
 PROTOCOL: four-phase   <optional, relay lane only>
+WORKTREE: <optional path from scripts/lane-worktree.sh create — required when this spec runs in parallel with others>
 ```
 
 Rules for the architect writing it:
 - No code beyond an interface signature or a couple of illustrative lines. A longer block is a spec that hasn't been delegated yet.
 - A hypothesis is fine ("the off-by-one is probably in the pagination cursor"); a solution is not.
 - If you can't finish a part, the decision isn't made — decide, then delegate.
+- Lanes run `scripts/spec-lint.mjs` first and refuse incomplete specs: six parts present, `REASONING` valid, `FILES` concrete (mark new files `(new)`), ≤ 15 fenced code lines.
+- Hotspot files (routes, config, registries, dependency manifests) belong to exactly one spec when specs run in parallel.
 
 ## Example
 

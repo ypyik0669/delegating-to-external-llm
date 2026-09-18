@@ -14,6 +14,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { appendUsage } from "./usage-log.mjs";
+
+const T0 = Date.now();
+let loggedUsage = false;
+function logUsage(status, usage) {
+  if (loggedUsage) return;
+  loggedUsage = true;
+  appendUsage({ lane: "chat", model, effort, status, in: usage?.prompt_tokens, cached: usage?.prompt_tokens_details?.cached_tokens, out: usage?.completion_tokens, duration: Date.now() - T0, project: process.cwd() });
+}
 
 function readEnvFile(file) {
   if (!fs.existsSync(file)) return {};
@@ -35,9 +44,9 @@ const raw = {
   ...process.env,
 };
 const env = {
-  BASE: raw.LLM_BASE || raw.ASTRA_BASE,
-  KEY: raw.LLM_KEY || raw.ASTRA_KEY,
-  MODEL: raw.LLM_MODEL || raw.ASTRA_MODEL || "gpt-6-astra",
+  BASE: raw.LLM_BASE || raw.ASTRA_BASE || raw.EVAL_LLM_BASE,
+  KEY: raw.LLM_KEY || raw.ASTRA_KEY || raw.EVAL_LLM_KEY,
+  MODEL: raw.LLM_MODEL || raw.ASTRA_MODEL || raw.EVAL_LLM_MODEL || "gpt-6-astra",
   REASONING: raw.LLM_REASONING || raw.ASTRA_REASONING || "xhigh",
   MIN_INPUT: Number(raw.LLM_MIN_INPUT_TOKENS || 0) || 0,
 };
@@ -222,6 +231,7 @@ for (let attempt = 0; attempt <= RETRIES; attempt++) {
   console.error(`llm: ${err}${last ? "" : ` — retrying (${attempt + 1}/${RETRIES})`}`);
   if (last) {
     console.error("STATUS: unavailable");
+    logUsage("unavailable", null);
     process.exit(1);
   }
   await sleep(2000 * 2 ** attempt);
@@ -241,5 +251,7 @@ if (usage) {
 }
 if (finish === "length") {
   console.error(`llm: reply truncated at ${maxTokens} tokens (finish=length). Re-run with a larger --max.`);
+  logUsage("truncated", usage);
   process.exit(3);
 }
+logUsage("ok", usage);

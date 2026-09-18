@@ -12,3 +12,5 @@ codex-final.*
 node_modules/
 .DS_Store
 Thumbs.db
+evals/results/
+.lanes/

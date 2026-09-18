@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [18, 22]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Syntax checks (node --check, bash -n)
+        run: npm run check
+      - name: Unit tests (hook, spec-lint, usage)
+        run: npm test
+      - name: shellcheck
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -S warning scripts/*.sh evals/*/fixture.sh
+      - name: Lane script fails loudly without codex / relay
+        run: |
+          printf 'OBJECTIVE: x\nFILES: a\nINTERFACES: n\nCONSTRAINTS: n\nVERIFICATION: node -v\nREASONING: low\n' > /tmp/s.md
+          set +e
+          EVAL_CODEX_DISABLED=1 bash scripts/codex-lane.sh --spec /tmp/s.md > /tmp/out.txt; rc=$?
+          set -e
+          cat /tmp/out.txt
+          test "$rc" -eq 2 && grep -q '^STATUS: unavailable' /tmp/out.txt
+      - name: spec-lint smoke
+        run: |
+          printf 'OBJECTIVE: x\nFILES: package.json\nINTERFACES: n\nCONSTRAINTS: n\nVERIFICATION: npm test\nREASONING: low\n' > /tmp/good.md
+          node scripts/spec-lint.mjs /tmp/good.md
+          printf 'OBJECTIVE: x\nREASONING: max\n' > /tmp/bad.md
+          if node scripts/spec-lint.mjs /tmp/bad.md; then echo "lint should have failed"; exit 1; fi
+
+  plugin-validate:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: claude plugin validate
+        run: |
+          npm i -g @anthropic-ai/claude-code
+          claude plugin validate .
