@@ -4,7 +4,9 @@
 
 **English** | [中文](README.zh-CN.md)
 
-A Claude Code plugin that turns Claude into the **architect** and hands **all implementation** to an external model on **your own OpenAI-compatible relay** (any base URL + API key). Claude writes specs, routes work, verifies diffs, and asks a clean-context Claude advisor for a ship / fix-first / rethink verdict before reporting done. It never types the code itself.
+A Claude Code plugin that turns Claude into the **architect** and hands **analysis, implementation and code review** to an external model on **your own OpenAI-compatible relay** (any base URL + API key). The external model reads the repo and drafts the spec; deterministic scripts drive it to implement and verify; it reviews the diff cross-vendor; Claude only decides, approves, and gives the final verdict. Claude never reads the codebase to learn it, never types the code, and never babysits a lane.
+
+No agent in this plugin pins a model. Lanes run whatever `LLM_MODEL` you configure; everything else runs on your session model. Only you switch models.
 
 Modeled on the architect pattern from [fable-advisor](https://github.com/DannyMac180/fable-advisor) by Dan McAteer, adapted to a single relay-served model with two delivery mechanisms and hard enforcement.
 
@@ -13,27 +15,34 @@ Modeled on the architect pattern from [fable-advisor](https://github.com/DannyMa
 - **Spend the premium on judgment, not typing.** Claude's tokens go to decomposition, specs and verdicts; the relay model does the volume.
 - **Cross-vendor by construction.** The code comes from a non-Anthropic model; Claude's verification and the advisor's review are real second opinions.
 - **No silent drift.** Specs are linted before a lane spends anything, edits are fenced to the spec's FILES, lanes fail loudly (`unavailable`, `refused`, `SCOPE VIOLATION`), reports carry the verification the lane re-ran itself, and an optional hook physically blocks Claude from editing repo files while delegation is on.
-- **Evidence, not vibes.** Every lane call lands in a usage ledger; `/delegating-to-external-llm:usage` shows exactly how much the external model did.
+- **Evidence, not vibes.** Every lane call lands in a usage ledger with a `claude : external` token ratio, so you can see who actually did the work (target ≥ 1 : 5).
+- **Claude pays only for judgment.** Reading the code, supervising lanes and reviewing diffs all run on the external model or in scripts; Claude's job per task is roughly: read a 30-line brief, edit a spec, read a 40-line report, give a verdict.
 
 ## How it works
 
 ```
 you ──► Claude (architect)
-          │  six-part spec + REASONING: <effort>
-          ├──► codex-implementer   codex exec ──► your relay ──► model edits the repo itself
-          ├──► relay-implementer   llm.mjs    ──► your relay ──► text applied verbatim
-          │  LANE REPORT (STATUS, CHANGES, VERIFIED …)
-          ├──► llm-advisor (Claude, read-only, clean context) ──► ship / fix-first / rethink
-          └──► report to you: lanes, efforts, verbatim test counts, advisor verdict
+          ├──► analyze lane      codex (read-only by contract) ──► your relay ──► BRIEF + SPEC DRAFT
+          │  Claude: answers open questions, edits the draft, saves spec files
+          ├──► lane-run.mjs      spec-lint → codex exec ──► your relay ──► model edits + verifies
+          │                      script re-runs verification, resumes on failure, fences files, checks lockfile
+          │  LANE REPORT (STATUS, CHANGES, VERIFIED …) — no LLM supervisor
+          ├──► llm-advisor       codex --review (external reads the diff) ──► Claude verdict
+          └──► report to you: lanes, efforts, verbatim test counts, verdict, ledger ratio
 ```
 
 | Lane | How the model runs | Agent | When |
 |---|---|---|---|
-| Agentic (default) | `codex exec` pointed at your relay (Responses API); the model reads, edits and runs tests itself at the permission level you chose (`workspace` / `workspace-net` / `yolo`); retries resume the same session | `codex-implementer` | Any implementation task |
+| Analyze | `codex exec` read-only by contract; returns a ≤30-line brief + six-part spec draft | `lane-run.mjs --analyze` / `codex-analyst` | Every task, before the spec |
+| Implement (default) | `lane-run.mjs`: spec-lint → `codex exec` on your relay (private `CODEX_HOME`, permission level `workspace` / `workspace-net` / `yolo`) → independent verification → resume on failure → LANE REPORT | `lane-run.mjs` / `codex-implementer` | Any implementation task |
 | Chat / fallback | `scripts/llm.mjs` chat completions; the agent applies the reply verbatim | `relay-implementer` | codex unavailable, a task failed twice, or you want the audited four-call trail (`PROTOCOL: four-phase`) |
-| Review | Claude, session effort, read-only | `llm-advisor` | Commitment boundaries + mandatory end-of-deliverable review |
+| Review | `codex-lane.sh --review` (external reads the diff) then Claude judges | `llm-advisor` | Commitment boundaries + mandatory end-of-deliverable review |
 
 Reasoning effort is named **per task** in the spec (`REASONING: low|medium|high|xhigh`), never pinned globally.
+
+### Why this shape (measured)
+
+Version 2.1 was tested on a real monorepo (supermemory): the external model wrote all the code, but Claude still spent ~200k tokens on three exploration agents, two lane-supervisor agents and an advisor, plus every background notification re-entered a 400k context. 2.2 moves exploration to the analyze lane, replaces LLM supervisors with `lane-run.mjs`, gives codex a private home (no MCP/AGENTS.md/skills noise), batches lanes into one wake-up, and records both sides in the ledger.
 
 ## Requirements
 
@@ -101,7 +110,9 @@ Tell Claude:
 
 > delegate all coding to the external model; you are only the brain.
 
-Claude loads the skill, writes a six-part spec per task, dispatches lanes on disjoint file sets (in parallel when independent), reads the diffs, re-runs or spot-checks the verification, consults `llm-advisor`, and reports.
+Claude loads the skill and, per task: runs the analyze lane, edits the spec draft it gets back, runs `lane-run.mjs` (batched when tasks are independent, one worktree each), reads the LANE REPORTs, consults `llm-advisor`, and reports with the ledger line. Commands: `/delegating-to-external-llm:analyze <task>`, `:lane <spec…>`, `:usage`, `:setup`.
+
+Start delegation in a fresh session (or after `/compact`) with `/effort low`: every background notification re-enters your whole context.
 
 ### The spec contract (`templates/spec.md`)
 
@@ -144,7 +155,7 @@ File sets must be disjoint and hotspot files (routes, config, registries, manife
 
 ### Usage ledger
 
-Every lane call appends to `~/.claude/llm-usage.jsonl`. `node scripts/usage.mjs --since 24h` (or `/delegating-to-external-llm:usage`) shows calls, prompt / cached / output tokens and wall time by lane, status and project — the proof that the external model, not Claude, did the work.
+Every lane call appends to `~/.claude/llm-usage.jsonl`. `node scripts/usage.mjs --since 24h` (or `/delegating-to-external-llm:usage`) shows calls, prompt / cached / output tokens and wall time by lane, status and project, plus a **`claude : external` ratio** — record Claude-side subagent spend with `usage.mjs --claude-in <n> --claude-out <n>` so the ratio is honest. Set `LLM_PRICE_*` / `CLAUDE_PRICE_*` in the env file for USD.
 
 ## Hard enforcement (optional)
 
@@ -176,7 +187,7 @@ See [hooks/README.md](hooks/README.md).
 ## Tests and evals
 
 ```
-npm test                                   # 22 node:test cases: hook, spec-lint, usage ledger
+npm test                                   # 31 node:test cases: hook, spec-lint, usage ledger, lane driver (stubbed codex)
 npm run check                              # node --check + bash -n on every script
 claude plugin eval . --tag offline --scaffold --runs 1 --no-publish   # behavioural cases (see evals/README.md)
 ```
@@ -191,10 +202,14 @@ skills/delegating-to-external-llm/SKILL.md     routing doctrine, spec contract, 
 agents/codex-implementer.md                    agentic lane (codex exec over your relay)
 agents/relay-implementer.md                    chat lane (llm.mjs, verbatim apply, four-phase)
 agents/llm-advisor.md                          read-only Claude reviewer
-commands/setup.md, commands/usage.md           /delegating-to-external-llm:setup, :usage
+commands/setup.md, usage.md, lane.md, analyze.md   /delegating-to-external-llm:setup, :usage, :lane, :analyze
+agents/codex-analyst.md                        thin wrapper: analyze lane
+scripts/lane-run.mjs                           deterministic lane driver (lint → codex → verify → resume → report; --batch; --analyze)
+codex-home/config.toml                         template for the lanes' private CODEX_HOME
+templates/analysis-prompt.md                   brief + spec-draft prompt
 scripts/setup.mjs                              interactive relay/key/permission setup + smoke test
 scripts/llm.mjs                                streaming chat-completions CLI (--spec, -f, --effort, --out, --pad, retries, ledger)
-scripts/codex-lane.sh                          codex exec wrapper: relay provider, access level, file fence, session resume, ledger, ran/refused/unavailable
+scripts/codex-lane.sh                          codex exec wrapper: implement / --analyze / --review, relay provider, private CODEX_HOME, access level, file fence, stray-write guard, session resume, ledger
 scripts/spec-lint.mjs                          refuses incomplete or code-dictating specs
 scripts/lane-worktree.sh                       create / check / merge / cleanup one worktree per parallel lane
 scripts/usage.mjs, scripts/usage-log.mjs       usage ledger

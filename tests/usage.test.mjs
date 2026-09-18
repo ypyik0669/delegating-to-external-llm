@@ -28,6 +28,7 @@ test("usage summarises by lane and status", () => {
   assert.equal(r.status, 0, r.stderr);
   const s = JSON.parse(r.stdout);
   assert.equal(s.total.calls, 2);
+  assert.equal(s.external.calls, 2);
   assert.equal(s.total.prompt_tokens, 24100);
   assert.deepEqual(s.by_lane.map((l) => l.label).sort(), ["chat", "codex"]);
   assert.ok(s.by_status.some((l) => l.label === "ran" && l.calls === 1));
@@ -37,6 +38,14 @@ test("usage text output and empty window", () => {
   assert.match(r.stdout, /by lane/);
   const e = run("usage.mjs", ["--since", "1m", "--project", "/nowhere"]);
   assert.match(e.stdout, /No lane calls recorded/);
+});
+test("usage records claude-side spend and computes the ratio", () => {
+  const r = run("usage.mjs", ["--claude-in", "1000", "--claude-out", "50", "--note", "explore"]);
+  assert.match(r.stdout, /recorded claude-side usage: in=1000 out=50/);
+  const s = JSON.parse(run("usage.mjs", ["--since", "1h", "--json"]).stdout);
+  assert.equal(s.claude.calls, 1);
+  assert.equal(s.external.calls, 2);
+  assert.ok(s.ratio_claude_to_external > 0);
 });
 test("usage rejects bad --since", () => {
   assert.equal(run("usage.mjs", ["--since", "soon"]).status, 2);

@@ -3,24 +3,36 @@
 # plus a pre-merge conflict check so problems surface before anything lands on the main tree.
 #
 #   bash lane-worktree.sh create <slug>   # .lanes/<slug> on branch lane/<slug> from HEAD; prints the path
-#   bash lane-worktree.sh check  <slug>   # dry-run merge into the current branch; lists conflicting files; exit 1 on conflict
+#   bash lane-worktree.sh check  <slug>   # commits the lane's work, dry-run merge; lists conflicting files; exit 1 on conflict
 #   bash lane-worktree.sh merge  <slug>   # check, then merge --no-commit (you commit), then remove worktree + branch
 #   bash lane-worktree.sh list
 #   bash lane-worktree.sh cleanup         # remove every .lanes/* worktree and lane/* branch (asks nothing — use after merging)
 #
-# Run from the main working tree of the repo. Worktrees live under <repo>/.lanes/ (git-ignored via .git/info/exclude).
+# Run from the main working tree of the repo. Worktrees live under <repo>/.lanes/ (git-ignored via
+# .git/info/exclude). Lanes never commit; check/merge commit whatever the lane left in the worktree
+# onto lane/<slug> so the merge has something to merge. On Windows, create enables core.longpaths.
 set -u
 cmd="${1:-}"; slug="${2:-}"
-[ -n "$cmd" ] || { sed -n '2,12p' "$0"; exit 1; }
+[ -n "$cmd" ] || { sed -n '2,13p' "$0"; exit 1; }
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "lane-worktree: not inside a git repo" >&2; exit 1; }
 cd "$ROOT" || exit 1
 LANES="$ROOT/.lanes"
 need_slug() { [ -n "$slug" ] && [[ "$slug" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "lane-worktree: slug required ([A-Za-z0-9._-])" >&2; exit 1; }; }
 ensure_exclude() { mkdir -p "$ROOT/.git/info"; grep -qx '.lanes/' "$ROOT/.git/info/exclude" 2>/dev/null || echo '.lanes/' >> "$ROOT/.git/info/exclude"; }
+commit_lane() { # commit uncommitted work inside the worktree so the branch carries it
+  local wt="$LANES/$slug"
+  [ -d "$wt" ] || return 0
+  if [ -n "$(git -C "$wt" status --porcelain)" ]; then
+    git -C "$wt" add -A
+    git -C "$wt" -c user.name="lane/$slug" -c user.email="lane@delegating-to-external-llm" commit -q -m "lane/$slug: work" || return 1
+    echo "committed lane worktree changes onto lane/$slug"
+  fi
+}
 
 case "$cmd" in
   create)
     need_slug; ensure_exclude; mkdir -p "$LANES"
+    case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) git config core.longpaths true ;; esac
     if git show-ref --verify --quiet "refs/heads/lane/$slug"; then echo "lane-worktree: branch lane/$slug already exists" >&2; exit 1; fi
     if ! git rev-parse --verify -q HEAD >/dev/null; then echo "lane-worktree: repo has no commits yet; commit first" >&2; exit 1; fi
     git worktree add -q "$LANES/$slug" -b "lane/$slug" HEAD || exit 1
@@ -29,6 +41,7 @@ case "$cmd" in
   check)
     need_slug
     git show-ref --verify --quiet "refs/heads/lane/$slug" || { echo "lane-worktree: no branch lane/$slug" >&2; exit 1; }
+    commit_lane || exit 1
     if [ -n "$(git status --porcelain)" ]; then echo "lane-worktree: main tree has uncommitted changes; commit or stash before checking a merge" >&2; exit 1; fi
     if git merge --no-commit --no-ff -q "lane/$slug" >/dev/null 2>&1; then
       git merge --abort 2>/dev/null || git reset -q --hard HEAD

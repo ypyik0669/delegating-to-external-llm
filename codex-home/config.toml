@@ -1,0 +1,17 @@
+# Private CODEX_HOME for the lanes. codex-lane.sh sets CODEX_HOME to this directory so a lane run
+# never loads the user's ~/.codex: no MCP servers, no AGENTS.md, no personal profiles or trust list.
+# Everything that matters (model, relay provider, effort, sandbox) is passed on the command line by
+# the lane script; this file only pins behaviour that keeps runs cheap and deterministic.
+#
+# codex-lane.sh copies this template to ~/.claude/llm-codex-home/config.toml on first use (override with
+# LANE_CODEX_HOME); codex keeps its own state and trust entries there, never in the plugin directory.
+
+disable_response_storage = true
+model_verbosity = "low"
+model_reasoning_summary = "none"
+web_search = "disabled"
+project_doc_max_bytes = 0
+
+[shell_environment_policy]
+inherit = "core"
+

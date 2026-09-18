@@ -1,12 +1,12 @@
 {
   "name": "delegating-to-external-llm",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": true,
   "description": "Claude Code plugin: Claude is the architect, an external model on your own OpenAI-compatible relay writes all the code.",
   "type": "module",
   "engines": { "node": ">=18" },
   "scripts": {
-    "test": "node --test tests/hook.test.mjs tests/spec-lint.test.mjs tests/usage.test.mjs",
+    "test": "node --test tests/hook.test.mjs tests/spec-lint.test.mjs tests/usage.test.mjs tests/lane-run.test.mjs",
     "check": "node --check scripts/llm.mjs && node --check scripts/setup.mjs && node --check scripts/usage.mjs && node --check scripts/usage-log.mjs && node --check scripts/spec-lint.mjs && node --check hooks/block-direct-edits.mjs && bash -n scripts/codex-lane.sh && bash -n scripts/lane-worktree.sh"
   },
   "license": "MIT"

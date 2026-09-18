@@ -4,7 +4,9 @@
 
 [English](README.md) | **中文**
 
-一个 Claude Code 插件：让 Claude 只当**架构师**，把**全部实现工作**交给你**自己的 OpenAI 兼容中转**（任意 base URL + API key）上的外部模型。Claude 负责写 spec、路由任务、核对 diff，并在报告完成前让一个干净上下文的 Claude 顾问给出 ship / fix-first / rethink 裁定。Claude 自己一行实现代码都不写。
+一个 Claude Code 插件：让 Claude 只当**架构师**，把**分析、实现、代码评审**都交给你**自己的 OpenAI 兼容中转**（任意 base URL + API key）上的外部模型。外部模型读仓库、起草 spec；确定性脚本驱动它实现和验证；它再跨厂商评审 diff；Claude 只做决定、批 spec、下终审。Claude 不读代码学习仓库、不写实现、不逐轮看管通道。
+
+插件里没有任何代理钉死模型。通道跑你配置的 `LLM_MODEL`，其余全部跟随会话模型，只有你自己能切换模型。
 
 架构模式源自 Dan McAteer 的 [fable-advisor](https://github.com/DannyMac180/fable-advisor)，改造为"单一中转模型 + 两种投递方式 + 硬性门禁"。
 
@@ -13,27 +15,34 @@
 - **贵的 token 花在判断上，不花在打字上。** Claude 的 token 用于拆解、写 spec、下裁定，中转模型负责出量。
 - **天然跨厂商交叉检查。** 代码来自非 Anthropic 模型，Claude 的验证和顾问评审是真正的第二意见。
 - **不会悄悄漂移。** spec 先过静态检查再花钱，改动被围栏限制在 spec 的 FILES 内，通道失败会大声报告（`unavailable`、`refused`、`SCOPE VIOLATION`），报告里带通道自己重跑的验证结果，可选钩子在委托模式下物理禁止 Claude 直接改仓库文件。
-- **靠证据，不靠感觉。** 每次通道调用都记入用量账本，`/delegating-to-external-llm:usage` 直接告诉你外部模型到底干了多少。
+- **靠证据，不靠感觉。** 每次通道调用都记入用量账本，并给出 `claude : external` token 比例，一眼看出到底是谁在干活（目标 ≥ 1 : 5）。
+- **Claude 只为判断付费。** 读代码、看管通道、评审 diff 都在外部模型或脚本里跑；Claude 每个任务的工作量约等于：读 30 行 brief、改一份 spec、读 40 行报告、下一个裁定。
 
 ## 工作方式
 
 ```
 你 ──► Claude（架构师）
-        │  六段式 spec + REASONING: <档位>
-        ├──► codex-implementer   codex exec ──► 你的中转 ──► 模型自己改仓库、跑测试
-        ├──► relay-implementer   llm.mjs    ──► 你的中转 ──► 返回文本，逐字应用
-        │  LANE REPORT（STATUS、CHANGES、VERIFIED …）
-        ├──► llm-advisor（Claude，只读，干净上下文）──► ship / fix-first / rethink
-        └──► 向你汇报：通道、档位、原样测试计数、顾问裁定
+        ├──► 分析通道        codex（契约只读）──► 你的中转 ──► BRIEF + SPEC 草稿
+        │  Claude：回答开放问题、改草稿、存成 spec 文件
+        ├──► lane-run.mjs    spec-lint → codex exec ──► 你的中转 ──► 模型改代码 + 跑验证
+        │                    脚本自己重跑验证、失败续跑、文件围栏、锁文件检查
+        │  LANE REPORT（STATUS、CHANGES、VERIFIED …）——没有 LLM 监督
+        ├──► llm-advisor     codex --review（外部模型读 diff）──► Claude 裁定
+        └──► 向你汇报：通道、档位、原样测试计数、裁定、账本比例
 ```
 
 | 通道 | 模型运行方式 | 代理 | 何时用 |
 |---|---|---|---|
-| Agentic（默认） | `codex exec` 指向你的中转（Responses 协议），模型按你选的权限档位（`workspace` / `workspace-net` / `yolo`）自己读文件、改代码、跑测试；重试时续跑同一会话 | `codex-implementer` | 所有实现任务 |
+| 分析 | `codex exec` 契约只读；返回 ≤30 行 brief + 六段式 spec 草稿 | `lane-run.mjs --analyze` / `codex-analyst` | 每个任务写 spec 之前 |
+| 实现（默认） | `lane-run.mjs`：spec-lint → 中转上的 `codex exec`（私有 `CODEX_HOME`，权限档位 `workspace` / `workspace-net` / `yolo`）→ 独立验证 → 失败续跑 → LANE REPORT | `lane-run.mjs` / `codex-implementer` | 所有实现任务 |
 | Chat / 备用 | `scripts/llm.mjs` 聊天补全，代理逐字应用回复 | `relay-implementer` | codex 不可用、同一任务失败两次、或想要可审计的四次调用轨迹（`PROTOCOL: four-phase`） |
-| Review | Claude，继承会话档位，只读 | `llm-advisor` | 关键决策点 + 每次交付前的强制终审 |
+| Review | 先 `codex-lane.sh --review`（外部模型读 diff），再由 Claude 裁定 | `llm-advisor` | 关键决策点 + 每次交付前的强制终审 |
 
 推理档位**按任务**写在 spec 里（`REASONING: low|medium|high|xhigh`），不做全局钉死。
+
+### 为什么是这个形态（实测得出）
+
+2.1 在真实 monorepo（supermemory）上实测：代码确实全由外部模型写，但 Claude 仍花了约 20 万 token 在三个探索代理、两个通道监督代理和一个顾问上，而且每次后台通知都带着 40 万上下文重新进入。2.2 把探索交给分析通道，用 `lane-run.mjs` 取代 LLM 监督，给 codex 一个私有 home（不再加载 MCP/AGENTS.md/skill 噪音），多通道合并成一次唤醒，账本记录两边。
 
 ## 依赖
 
@@ -101,7 +110,9 @@ When delegation to the external LLM is active (the user said the external model 
 
 > 把所有编码交给外部模型做；你只是大脑。
 
-Claude 会加载 skill，为每个任务写六段式 spec，把互不相交的文件集派给通道（相互独立的任务并行），读 diff、重跑或抽查验证命令，咨询 `llm-advisor`，然后汇报。
+Claude 会加载 skill，每个任务：先跑分析通道，改它返回的 spec 草稿，运行 `lane-run.mjs`（独立任务批量并行，各自一个 worktree），读 LANE REPORT，咨询 `llm-advisor`，带着账本行汇报。命令：`/delegating-to-external-llm:analyze <任务>`、`:lane <spec…>`、`:usage`、`:setup`。
+
+请在新会话（或 `/compact` 之后）用 `/effort low` 开始委托：每次后台通知都会带着整个上下文重新进入。
 
 ### spec 合同（`templates/spec.md`）
 
@@ -144,7 +155,7 @@ bash scripts/lane-worktree.sh cleanup
 
 ### 用量账本
 
-每次通道调用追加到 `~/.claude/llm-usage.jsonl`。`node scripts/usage.mjs --since 24h`（或 `/delegating-to-external-llm:usage`）按通道、状态、项目汇总调用数、prompt / cached / output token 和耗时，这就是"代码是外部模型写的、不是 Claude 写的"的证据。
+每次通道调用追加到 `~/.claude/llm-usage.jsonl`。`node scripts/usage.mjs --since 24h`（或 `/delegating-to-external-llm:usage`）按通道、状态、项目汇总调用数、prompt / cached / output token 和耗时，并给出 **`claude : external` 比例**；用 `usage.mjs --claude-in <n> --claude-out <n>` 记录 Claude 侧子代理消耗，比例才诚实。env 里设 `LLM_PRICE_*` / `CLAUDE_PRICE_*` 可显示美元。
 
 ## 硬性门禁（可选）
 
@@ -176,7 +187,7 @@ rm    ~/.claude/llm-delegation.on    # 关
 ## 测试与评测
 
 ```
-npm test                                   # 22 个 node:test 用例：钩子、spec-lint、用量账本
+npm test                                   # 31 个 node:test 用例：钩子、spec-lint、用量账本、通道驱动（桩 codex）
 npm run check                              # 所有脚本 node --check + bash -n
 claude plugin eval . --tag offline --scaffold --runs 1 --no-publish   # 行为评测（见 evals/README.md）
 ```
@@ -191,10 +202,14 @@ skills/delegating-to-external-llm/SKILL.md     路由准则、spec 合同、报�
 agents/codex-implementer.md                    agentic 通道（codex exec 走你的中转）
 agents/relay-implementer.md                    chat 通道（llm.mjs，逐字应用，四阶段）
 agents/llm-advisor.md                          只读 Claude 评审
-commands/setup.md, commands/usage.md           /delegating-to-external-llm:setup、:usage
+commands/setup.md, usage.md, lane.md, analyze.md   /delegating-to-external-llm:setup、:usage、:lane、:analyze
+agents/codex-analyst.md                        薄包装：分析通道
+scripts/lane-run.mjs                           确定性通道驱动（lint → codex → 验证 → 续跑 → 报告；--batch；--analyze）
+codex-home/config.toml                         通道私有 CODEX_HOME 的模板
+templates/analysis-prompt.md                   brief + spec 草稿提示
 scripts/setup.mjs                              交互式中转 / key / 权限档位配置 + 冒烟测试
 scripts/llm.mjs                                流式聊天补全 CLI（--spec、-f、--effort、--out、--pad、自动重试、记账）
-scripts/codex-lane.sh                          codex exec 包装：中转 provider、权限档位、文件围栏、会话续跑、记账、ran/refused/unavailable 判定
+scripts/codex-lane.sh                          codex exec 包装：实现 / --analyze / --review、中转 provider、私有 CODEX_HOME、权限档位、文件围栏、误写守卫、会话续跑、记账
 scripts/spec-lint.mjs                          拒绝不完整或"口述实现"的 spec
 scripts/lane-worktree.sh                       并行通道的 worktree create / check / merge / cleanup
 scripts/usage.mjs, scripts/usage-log.mjs       用量账本

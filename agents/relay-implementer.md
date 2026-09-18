@@ -1,7 +1,6 @@
 ---
 name: relay-implementer
 description: Chat-completion fallback lane running gpt-6-astra (from ~/.claude/llm-relay.env) via the plugin's `llm.mjs`, at the reasoning effort the architect names in the spec. Route here when the codex lane reported unavailable, when it has failed a task twice, or when the architect wants the audited four-call trail (PROTOCOL four-phase) for a hard task. The relay returns text only, so this lane applies the model's output verbatim with Edit and runs the verification itself. Supports PROTOCOL four-phase (analysis → failing tests → implementation → self-review as four separate relay calls). Never writes logic itself.
-model: sonnet
 tools: Bash, Read, Edit, Write, Grep, Glob
 ---
 
