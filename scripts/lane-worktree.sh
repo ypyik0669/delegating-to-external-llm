@@ -75,7 +75,7 @@ case "$cmd" in
     ;;
   merge)
     need_slug
-    "$0" check "$slug" || exit 1
+    bash "$0" check "$slug" || exit 1
     stash_main
     git merge --no-commit --no-ff -q "lane/$slug" || { unstash_main; exit 1; }
     git reset -q  # leave the merge result unstaged so it combines with restored changes as plain working-tree edits
