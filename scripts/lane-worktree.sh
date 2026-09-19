@@ -20,10 +20,11 @@ cd "$ROOT" || exit 1
 LANES="$ROOT/.lanes"
 need_slug() { [ -n "$slug" ] && [[ "$slug" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "lane-worktree: slug required ([A-Za-z0-9._-])" >&2; exit 1; }; }
 ensure_exclude() { mkdir -p "$ROOT/.git/info"; grep -qx '.lanes/' "$ROOT/.git/info/exclude" 2>/dev/null || echo '.lanes/' >> "$ROOT/.git/info/exclude"; }
+GITID=(-c user.name=lane-worktree -c user.email=lane@delegating-to-external-llm)
 STASHED=0
 stash_main() { # park uncommitted main-tree changes (earlier merged lanes, WIP) so merge has a clean base
   if [ -n "$(git status --porcelain)" ]; then
-    git stash push -u -q -m "lane-worktree: main tree during $cmd $slug" || { echo "lane-worktree: could not stash main tree" >&2; exit 1; }
+    git "${GITID[@]}" stash push -u -q -m "lane-worktree: main tree during $cmd $slug" || { echo "lane-worktree: could not stash main tree" >&2; exit 1; }
     STASHED=1
   fi
 }
@@ -59,15 +60,17 @@ case "$cmd" in
     git show-ref --verify --quiet "refs/heads/lane/$slug" || { echo "lane-worktree: no branch lane/$slug" >&2; exit 1; }
     commit_lane || exit 1
     stash_main
-    if git merge --no-commit --no-ff -q "lane/$slug" >/dev/null 2>&1; then
+    MERGE_ERR=$(git "${GITID[@]}" merge --no-commit --no-ff -q "lane/$slug" 2>&1 >/dev/null); MERGE_RC=$?
+    if [ "$MERGE_RC" -eq 0 ]; then
       git merge --abort 2>/dev/null || git reset -q --hard HEAD
       unstash_main
       echo "MERGE OK: lane/$slug applies cleanly onto $(git rev-parse --abbrev-ref HEAD)"
       git diff --stat HEAD "lane/$slug" | tail -1
       exit 0
     else
-      echo "MERGE CONFLICT: lane/$slug vs $(git rev-parse --abbrev-ref HEAD)"
-      git diff --name-only --diff-filter=U
+      CONFL=$(git diff --name-only --diff-filter=U)
+      if [ -n "$CONFL" ]; then echo "MERGE CONFLICT: lane/$slug vs $(git rev-parse --abbrev-ref HEAD)"; printf '%s
+' "$CONFL"; else echo "MERGE FAILED: lane/$slug — $MERGE_ERR"; fi
       git merge --abort 2>/dev/null || git reset -q --hard HEAD
       unstash_main
       exit 1
@@ -77,7 +80,7 @@ case "$cmd" in
     need_slug
     bash "$0" check "$slug" || exit 1
     stash_main
-    git merge --no-commit --no-ff -q "lane/$slug" || { unstash_main; exit 1; }
+    git "${GITID[@]}" merge --no-commit --no-ff -q "lane/$slug" || { unstash_main; exit 1; }
     git reset -q  # leave the merge result unstaged so it combines with restored changes as plain working-tree edits
     unstash_main || exit 1
     git worktree remove --force "$LANES/$slug" 2>/dev/null || git worktree prune
