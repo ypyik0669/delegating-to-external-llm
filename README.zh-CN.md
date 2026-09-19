@@ -20,16 +20,7 @@
 
 ## 工作方式
 
-```
-你 ──► Claude（架构师）
-        ├──► 分析通道        codex（契约只读）──► 你的中转 ──► BRIEF + SPEC 草稿
-        │  Claude：回答开放问题、改草稿、存成 spec 文件
-        ├──► lane-run.mjs    spec-lint → codex exec ──► 你的中转 ──► 模型改代码 + 跑验证
-        │                    脚本自己重跑验证、失败续跑、文件围栏、锁文件检查
-        │  LANE REPORT（STATUS、CHANGES、VERIFIED …）——没有 LLM 监督
-        ├──► llm-advisor     codex --review（外部模型读 diff）──► Claude 裁定
-        └──► 向你汇报：通道、档位、原样测试计数、裁定、账本比例
-```
+![流程](assets/flow.svg)
 
 | 通道 | 模型运行方式 | 代理 | 何时用 |
 |---|---|---|---|
@@ -40,9 +31,26 @@
 
 推理档位**按任务**写在 spec 里（`REASONING: low|medium|high|xhigh`），不做全局钉死。
 
-### 为什么是这个形态（实测得出）
 
-2.1 在真实 monorepo（supermemory）上实测：代码确实全由外部模型写，但 Claude 仍花了约 20 万 token 在三个探索代理、两个通道监督代理和一个顾问上，而且每次后台通知都带着 40 万上下文重新进入。2.2 把探索交给分析通道，用 `lane-run.mjs` 取代 LLM 监督，给 codex 一个私有 home（不再加载 MCP/AGENTS.md/skill 噪音），多通道合并成一次唤醒，账本记录两边。
+## 实测数据
+
+在 [supermemory](https://github.com/supermemoryai/supermemory)（Bun/Turbo monorepo，约 5.8 万行）上做同样两个任务：给一个纯函数模块补 vitest 单测并接上 test 脚本；把 `filters: z.string()` 改成类型化的递归 AND/OR schema 并加测试。同一段提示词、没有触发词、插件两个版本。
+
+![Claude 的 token 花在哪](assets/tokens.svg)
+
+| | v2.1（代理监督） | v2.3（脚本监督） |
+|---|---|---|
+| Claude 读源码 / Explore 代理 | 3 个代理，约 115k token | **0** |
+| Claude 监督通道 | 2 个 sonnet 代理，约 60k | **0**（lane-run.mjs） |
+| Claude 评审 | 26k | 25.7k（先由 codex 评审） |
+| 通道之后 Claude 手动善后 | 3 次（误写、锁文件、lane 提交） | **0** |
+| 主对话之外的 Claude token | **≈ 201k** | **≈ 26k** |
+| 外部模型 | 4.3M prompt（85% 缓存） | 3.5M prompt（85% 缓存），27k 输出 |
+| 结果 | 13 + 36 个测试，顾问：ship | **65 + 83 个测试**，锁文件 +3 行，顾问：ship |
+
+单个 bug 的冒烟测试（无头 `claude -p`，无触发词）：7 回合，$1.06，analyze → implement → review，Claude 没改任何文件。
+
+如实说明：外部模型每次运行有 codex 自身约 2 万 token 的系统提示底噪；3.5M 里大部分是缓存命中，贵不贵取决于你中转的计价；主对话本身的 token 不在账本里，请保持会话精简（见 skill 的"会话卫生"）。
 
 ## 依赖
 

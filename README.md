@@ -20,16 +20,7 @@ Modeled on the architect pattern from [fable-advisor](https://github.com/DannyMa
 
 ## How it works
 
-```
-you ──► Claude (architect)
-          ├──► analyze lane      codex (read-only by contract) ──► your relay ──► BRIEF + SPEC DRAFT
-          │  Claude: answers open questions, edits the draft, saves spec files
-          ├──► lane-run.mjs      spec-lint → codex exec ──► your relay ──► model edits + verifies
-          │                      script re-runs verification, resumes on failure, fences files, checks lockfile
-          │  LANE REPORT (STATUS, CHANGES, VERIFIED …) — no LLM supervisor
-          ├──► llm-advisor       codex --review (external reads the diff) ──► Claude verdict
-          └──► report to you: lanes, efforts, verbatim test counts, verdict, ledger ratio
-```
+![Flow](assets/flow.svg)
 
 | Lane | How the model runs | Agent | When |
 |---|---|---|---|
@@ -40,9 +31,26 @@ you ──► Claude (architect)
 
 Reasoning effort is named **per task** in the spec (`REASONING: low|medium|high|xhigh`), never pinned globally.
 
-### Why this shape (measured)
 
-Version 2.1 was tested on a real monorepo (supermemory): the external model wrote all the code, but Claude still spent ~200k tokens on three exploration agents, two lane-supervisor agents and an advisor, plus every background notification re-entered a 400k context. 2.2 moves exploration to the analyze lane, replaces LLM supervisors with `lane-run.mjs`, gives codex a private home (no MCP/AGENTS.md/skills noise), batches lanes into one wake-up, and records both sides in the ledger.
+## Measured
+
+Two real tasks on [supermemory](https://github.com/supermemoryai/supermemory) (Bun/Turbo monorepo, ~58k LOC): add vitest coverage to a pure module and wire its test script; replace a loose `filters: z.string()` with a typed recursive AND/OR schema plus tests. Same prompt, no trigger phrase, two versions of this plugin.
+
+![Where Claude's tokens went](assets/tokens.svg)
+
+| | v2.1 (agents supervise) | v2.3 (scripts supervise) |
+|---|---|---|
+| Claude reads source / Explore agents | 3 agents, ~115k tokens | **0** |
+| Claude supervising lanes | 2 sonnet agents, ~60k | **0** (lane-run.mjs) |
+| Claude review | 26k | 25.7k (after a codex review) |
+| Claude hand fixes after lanes | 3 (stray writes, lockfile, lane commits) | **0** |
+| Claude-side tokens outside the main chat | **≈ 201k** | **≈ 26k** |
+| External model | 4.3M prompt (85% cached) | 3.5M prompt (85% cached), 27k out |
+| Outcome | 13 + 36 tests, advisor: ship | **65 + 83 tests**, lockfile +3 lines, advisor: ship |
+
+Single-bug smoke test (headless `claude -p`, no trigger phrase): 7 turns, $1.06, analyze → implement → review, Claude edited nothing.
+
+Honest caveats: the external model's base cost is codex's own ~20k-token system prompt per run; cache hits make most of the 3.5M cheap but your relay's pricing decides; the main conversation's own tokens are not in the ledger — keep the session small (see "Session hygiene" in the skill).
 
 ## Requirements
 
