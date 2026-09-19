@@ -51,9 +51,9 @@ test("second lane merges onto a dirty main tree (first lane's result is stashed 
 
 test("check reports a conflict and leaves the tree as it was", () => {
   git("add", "-A"); git("commit", "-qm", "land x and y");
-  write("hot.txt", "main edit\n"); git("commit", "-qam", "main: hot");
-  const c = wt("create", "z");
+  const c = wt("create", "z");                                       // lane branches off here…
   const p = c.stdout.trim();
+  write("hot.txt", "main edit\n"); git("commit", "-qam", "main: hot"); // …then main and the lane both edit hot.txt
   fs.writeFileSync(path.join(p, "hot.txt"), "z edit\n");
   const k = wt("check", "z");
   assert.equal(k.status, 1);
