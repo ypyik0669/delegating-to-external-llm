@@ -20,7 +20,26 @@ Modeled on the architect pattern from [fable-advisor](https://github.com/DannyMa
 
 ## How it works
 
-![Flow](assets/flow.svg)
+```mermaid
+flowchart LR
+  subgraph C["Claude — judgment only"]
+    direction TB
+    T["1 · task in one sentence"]
+    S["3 · approve the spec draft<br/>(≈ 2k tokens)"]
+    R["5 · read LANE REPORT<br/>(≤ 40 lines)"]
+    V["7 · verdict<br/>ship / fix-first / rethink"]
+  end
+  subgraph X["External model on your relay — reading, writing, reviewing"]
+    direction TB
+    A["2 · analyze lane<br/>reads repo → BRIEF + SPEC DRAFT"]
+    L["4 · lane-run.mjs<br/>spec-lint → codex edits → re-run tests<br/>→ resume on failure → file fence → lockfile check"]
+    W["6 · cross-vendor review<br/>codex reads the whole diff"]
+  end
+  T --> A --> S --> L --> R --> W --> V
+  L -. one git worktree per parallel lane .- L
+```
+
+Claude never opens a source file to learn the codebase, never types implementation code, and never supervises a lane turn by turn. Every external call lands in a ledger, so the `claude : external` token ratio is visible.
 
 | Lane | How the model runs | Agent | When |
 |---|---|---|---|
@@ -51,6 +70,68 @@ Two real tasks on [supermemory](https://github.com/supermemoryai/supermemory) (B
 Single-bug smoke test (headless `claude -p`, no trigger phrase): 7 turns, $1.06, analyze → implement → review, Claude edited nothing.
 
 Honest caveats: the external model's base cost is codex's own ~20k-token system prompt per run; cache hits make most of the 3.5M cheap but your relay's pricing decides; the main conversation's own tokens are not in the ledger — keep the session small (see "Session hygiene" in the skill).
+
+## 60-second quickstart
+
+```
+claude plugin marketplace add ypyik0669/delegating-to-external-llm
+claude plugin install delegating-to-external-llm@delegating-to-external-llm
+node ~/.claude/plugins/…/delegating-to-external-llm/scripts/setup.mjs   # or: /delegating-to-external-llm:setup inside Claude Code
+```
+
+Then open Claude Code in any repo and describe a task the way you always did. Nothing else to say — the plugin's hook makes every coding task go through the lanes.
+
+## What you actually see
+
+A lane returns a fixed, ≤ 40-line report (this one is from the supermemory run):
+
+```
+LANE REPORT
+LANE: codex-implementer (relay model, effort: medium) · driver: lane-run.mjs (no LLM supervisor)
+STATUS: complete
+CHANGES:
+  - packages/lib/package.json
+  - packages/lib/similarity.test.ts
+  - bun.lock
+VERIFIED:
+  $ bun run --cwd packages/lib test → exit 0 (expected: all passing)
+      Tests  65 passed (65)
+  $ bun run --cwd packages/lib check-types → exit 0
+MODEL SAID: Added vitest coverage for every export; lockfile regenerated with bun 1.3.6 (+3 lines).
+ROUNDS: 1 — fresh in=994k cached=951k out=6.2k → ran
+GAPS: none
+```
+
+And the ledger (`/delegating-to-external-llm:usage`):
+
+```
+who did the work
+  external      8 calls   3,463,814 prompt   2,941,086 cached   26,948 output   60.1 min
+  claude        5 calls      34,700 prompt           0 cached    2,500 output
+  claude : external tokens = 1 : 93.8   (target ≥ 1 : 5)
+```
+
+## What Claude does and doesn't do
+
+| Claude does | Claude never does |
+|---|---|
+| States the task, answers the analyze lane's open questions | Opens source files to understand the code |
+| Edits and approves the six-part spec | Writes implementation code or tests |
+| Splits work into disjoint specs, one worktree each | Fixes a lane's diff, lockfile, or stray write by hand |
+| Reads lane reports, sends corrected specs | Supervises a lane turn by turn |
+| Gives the final verdict after the codex review | Reports "done" without the ledger line |
+
+## FAQ
+
+**Is this cheaper?** Claude-side spend outside the main chat dropped from ~201k to ~26k tokens on the same two tasks (see Measured). The external model's cost depends on your relay's pricing; ~85% of its prompt tokens were cache hits in our runs. The remaining Claude cost is the main conversation itself — keep it small.
+
+**Which models?** Whatever you configure. Lanes run `LLM_MODEL` on your relay; Claude and every agent run on your session model. The plugin never pins or switches a model.
+
+**What if the relay or codex is down?** Lanes report `unavailable` and Claude tells you. It does not "just do it itself" — that is the point.
+
+**Can I turn it off for a session?** Disable the plugin, or start Claude Code with `LLM_DELEGATION=0`.
+
+**How is this different from fable-advisor?** Same architect idea, but: any OpenAI-compatible relay instead of a ChatGPT login; deterministic scripts instead of LLM supervisors; an analyze lane so Claude never reads the repo; file fence, lockfile check, stray-write guard; a two-sided ledger; and a hook that triggers without a phrase.
 
 ## Requirements
 

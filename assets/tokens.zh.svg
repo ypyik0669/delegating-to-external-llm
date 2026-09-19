@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="330" viewBox="0 0 960 330" font-family="ui-sans-serif, 'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', Segoe UI, Helvetica, Arial, sans-serif" font-size="14">
+  <rect width="960" height="330" rx="12" fill="#ffffff" stroke="#e5e7eb"/>
+  <text x="30" y="34" font-size="16" font-weight="600" fill="#111827">同样两个任务（supermemory，Bun/Turbo monorepo，约 5.8 万行）：Claude 的 token 花在哪</text>
+  <text x="30" y="54" font-size="12" fill="#6b7280">统计主对话之外的 Claude 侧 token（探索 + 监督通道 + 评审）。两次代码都由外部模型写。</text>
+
+  <line x1="230" y1="80" x2="230" y2="250" stroke="#d1d5db"/>
+  <g font-size="12" fill="#6b7280">
+    <text x="230" y="270" text-anchor="middle">0</text>
+    <text x="405" y="270" text-anchor="middle">5 万</text>
+    <text x="580" y="270" text-anchor="middle">10 万</text>
+    <text x="755" y="270" text-anchor="middle">15 万</text>
+    <text x="930" y="270" text-anchor="middle">20 万</text>
+  </g>
+  <g stroke="#f3f4f6"><line x1="405" y1="80" x2="405" y2="250"/><line x1="580" y1="80" x2="580" y2="250"/><line x1="755" y1="80" x2="755" y2="250"/><line x1="930" y1="80" x2="930" y2="250"/></g>
+
+  <text x="215" y="120" text-anchor="end" font-weight="600" fill="#111827">v2.1</text>
+  <text x="215" y="138" text-anchor="end" font-size="12" fill="#6b7280">3 个探索代理、2 个 LLM 监督、顾问</text>
+  <rect x="230" y="100" width="402" height="44" fill="#f59e0b" opacity="0.9"/>
+  <rect x="632" y="100" width="210" height="44" fill="#fb923c" opacity="0.9"/>
+  <rect x="842" y="100" width="88" height="44" fill="#fdba74" opacity="0.9"/>
+  <text x="240" y="128" fill="#111827" font-size="12">11.5 万 探索读代码</text>
+  <text x="640" y="128" fill="#111827" font-size="12">6 万 监督通道</text>
+  <text x="850" y="128" fill="#111827" font-size="12">2.6 万</text>
+  <text x="235" y="160" font-size="12" fill="#6b7280">≈ 20.1 万 · 外加 Claude 手动善后 3 次（误写、锁文件、lane 提交）</text>
+
+  <text x="215" y="205" text-anchor="end" font-weight="600" fill="#111827">v2.3</text>
+  <text x="215" y="223" text-anchor="end" font-size="12" fill="#6b7280">分析通道、lane-run.mjs、codex 评审</text>
+  <rect x="230" y="185" width="90" height="44" fill="#10b981" opacity="0.9"/>
+  <text x="330" y="213" fill="#111827" font-size="12">2.57 万 — 只剩顾问裁定 · 0 次读源码 · 0 个探索代理 · 0 次手改</text>
+
+  <text x="30" y="300" font-size="12" fill="#6b7280">结果持平或更好：v2.3 落地 65 + 83 个通过的测试，类型检查全绿，锁文件只 +3 行，顾问裁定 ship。外部模型：350 万 prompt token（85% 缓存命中）、2.7 万输出、约 60 分钟。</text>
+  <text x="30" y="318" font-size="12" fill="#6b7280">剩余成本是主对话本身（轮询时 41 个回合）；v2.3.1 起通道在后台运行，会话只被唤醒一次。</text>
+</svg>

@@ -20,7 +20,26 @@
 
 ## 工作方式
 
-![流程](assets/flow.svg)
+```mermaid
+flowchart LR
+  subgraph C["Claude — 只做判断"]
+    direction TB
+    T["1 · 一句话任务"]
+    S["3 · 审批 spec 草稿<br/>（约 2k token）"]
+    R["5 · 读 LANE REPORT<br/>（≤ 40 行）"]
+    V["7 · 裁定<br/>ship / fix-first / rethink"]
+  end
+  subgraph X["你中转上的外部模型 — 读代码、写代码、评审"]
+    direction TB
+    A["2 · 分析通道<br/>读仓库 → BRIEF + SPEC 草稿"]
+    L["4 · lane-run.mjs<br/>spec-lint → codex 改代码 → 重跑测试<br/>→ 失败续跑 → 文件围栏 → 锁文件检查"]
+    W["6 · 跨厂商评审<br/>codex 读整个 diff"]
+  end
+  T --> A --> S --> L --> R --> W --> V
+  L -. 并行任务各一个 git worktree .- L
+```
+
+Claude 不打开源码学习仓库、不写实现代码、不逐轮看管通道。每次外部调用都记入账本，`claude : external` 的 token 比例一目了然。
 
 | 通道 | 模型运行方式 | 代理 | 何时用 |
 |---|---|---|---|
@@ -36,7 +55,7 @@
 
 在 [supermemory](https://github.com/supermemoryai/supermemory)（Bun/Turbo monorepo，约 5.8 万行）上做同样两个任务：给一个纯函数模块补 vitest 单测并接上 test 脚本；把 `filters: z.string()` 改成类型化的递归 AND/OR schema 并加测试。同一段提示词、没有触发词、插件两个版本。
 
-![Claude 的 token 花在哪](assets/tokens.svg)
+![Claude 的 token 花在哪](assets/tokens.zh.svg)
 
 | | v2.1（代理监督） | v2.3（脚本监督） |
 |---|---|---|
@@ -51,6 +70,68 @@
 单个 bug 的冒烟测试（无头 `claude -p`，无触发词）：7 回合，$1.06，analyze → implement → review，Claude 没改任何文件。
 
 如实说明：外部模型每次运行有 codex 自身约 2 万 token 的系统提示底噪；3.5M 里大部分是缓存命中，贵不贵取决于你中转的计价；主对话本身的 token 不在账本里，请保持会话精简（见 skill 的"会话卫生"）。
+
+## 一分钟上手
+
+```
+claude plugin marketplace add ypyik0669/delegating-to-external-llm
+claude plugin install delegating-to-external-llm@delegating-to-external-llm
+node ~/.claude/plugins/…/delegating-to-external-llm/scripts/setup.mjs   # 或在 Claude Code 里：/delegating-to-external-llm:setup
+```
+
+然后在任意仓库打开 Claude Code，像平时一样描述任务。不用多说一个字，插件的钩子会让每个编码任务走通道。
+
+## 你实际会看到什么
+
+通道返回固定格式、不超过 40 行的报告（这份来自 supermemory 实测）：
+
+```
+LANE REPORT
+LANE: codex-implementer (relay model, effort: medium) · driver: lane-run.mjs (no LLM supervisor)
+STATUS: complete
+CHANGES:
+  - packages/lib/package.json
+  - packages/lib/similarity.test.ts
+  - bun.lock
+VERIFIED:
+  $ bun run --cwd packages/lib test → exit 0 (expected: all passing)
+      Tests  65 passed (65)
+  $ bun run --cwd packages/lib check-types → exit 0
+MODEL SAID: Added vitest coverage for every export; lockfile regenerated with bun 1.3.6 (+3 lines).
+ROUNDS: 1 — fresh in=994k cached=951k out=6.2k → ran
+GAPS: none
+```
+
+以及账本（`/delegating-to-external-llm:usage`）：
+
+```
+who did the work
+  external      8 calls   3,463,814 prompt   2,941,086 cached   26,948 output   60.1 min
+  claude        5 calls      34,700 prompt           0 cached    2,500 output
+  claude : external tokens = 1 : 93.8   (target ≥ 1 : 5)
+```
+
+## Claude 做什么、不做什么
+
+| Claude 做 | Claude 绝不做 |
+|---|---|
+| 说清任务，回答分析通道提出的开放问题 | 打开源码文件去理解代码 |
+| 修改并批准六段式 spec | 写实现代码或测试 |
+| 把工作拆成互不相交的 spec，各一个 worktree | 手改通道的 diff、锁文件或误写 |
+| 读通道报告，回发修正后的 spec | 逐轮看管通道 |
+| 在 codex 评审之后给出终审 | 不附账本就汇报"完成" |
+
+## 常见问题
+
+**真的更省吗？** 同样两个任务，主对话之外的 Claude 消耗从约 20.1 万降到约 2.6 万 token（见实测数据）。外部模型的费用取决于你中转的计价；实测中约 85% 的 prompt token 是缓存命中。剩下的 Claude 成本是主对话本身，保持会话精简。
+
+**用什么模型？** 你配什么就是什么。通道跑你中转上的 `LLM_MODEL`；Claude 和所有代理跑你的会话模型。插件从不钉死或切换模型。
+
+**中转或 codex 挂了怎么办？** 通道报 `unavailable`，Claude 如实告诉你，不会"那我自己来"，这正是设计目的。
+
+**能临时关掉吗？** 禁用插件，或用 `LLM_DELEGATION=0` 启动 Claude Code。
+
+**和 fable-advisor 有什么不同？** 架构师思路相同，但：任意 OpenAI 兼容中转而非 ChatGPT 登录；脚本监督而非 LLM 监督；分析通道让 Claude 不用读仓库；文件围栏、锁文件检查、误写守卫；双边账本；无需触发词的钩子。
 
 ## 依赖
 
