@@ -91,6 +91,29 @@ node ~/.claude/plugins/…/delegating-to-external-llm/scripts/setup.mjs   # 或�
 
 实时事件监视器按每次 codex 调用执行 `LLM_LANE_MAX_INPUT_TOKENS=3000000` 输入 token 上限，包含缓存输入。在 `~/.claude/llm-relay.env` 中设置此仅环境配置项，或用环境变量覆盖；setup 不会询问它。超限会终止 codex，返回 `STATUS: timeout` 和 `REASON: token budget exceeded (<n> > <limit>)`。新建私有 home 默认请求简洁推理摘要以显示进度，不覆盖已有配置。
 
+### 仪表盘
+
+每次派发都会在 `WATCH:` 后显示 `DASHBOARD: http://127.0.0.1:7788`（禁用或启动失败时除外）。前台、分离和批量运行都会自动启动仪表盘；打开此地址，或运行 `/delegating-to-external-llm:dashboard`。
+
+| 标签页 | 内容 |
+|---|---|
+| Plan | 最近一次 todo 清单；未上报时显示 no plan reported |
+| Thinking | 按时间排列的已记录推理摘要 |
+| Commands | 命令、运行指示、退出码和可折叠输出 |
+| Files | 按路径分组的变更和报告中的 CHANGES 段 |
+| Messages | 代理消息、每轮用量、错误和 MCP 调用 |
+| Report | 最终报告和可折叠的 spec |
+| Log | 通道日志末尾 64 KiB |
+
+左侧优先列出运行中的通道，显示阶段、耗时、输入/缓存/输出 token、推理档位、模型和 home。顶部提供会话 ID、`codex resume` 复制按钮、WATCH 命令以及 1h/24h/7d 账本总量。每两秒刷新通道和增量事件；关闭 **Follow** 可保持阅读位置。显示最近七天更新的历史通道，不删除文件。Thinking 只展示已记录的摘要，不展示模型未上报的内部推理。
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/lane-dashboard.mjs" --open
+node "${CLAUDE_PLUGIN_ROOT}/scripts/lane-dashboard.mjs" --port 7789 --dir "<状态目录>"
+```
+
+在环境或 `~/.claude/llm-relay.env` 中设置 `LLM_DASHBOARD=0` 可关闭自动启动；`LLM_DASHBOARD_PORT=7788` 配置端口，环境变量优先。禁用自动启动后仍可手动执行 `--open`。目录优先级：`--dir` → `LANE_STATUS_DIR` → `$CLAUDE_SCRATCHPAD_DIR/lanes` → `~/.claude/lane-status`。一个端口对应一个状态目录；多个通道应共用目录，独立目录使用不同端口。已有仪表盘会被复用，不替换占用端口的其他服务。服务仅监听 `127.0.0.1`，不加载外部资源，不执行事件里的命令。前台服务可按 Ctrl+C 停止。Windows 分离驱动使用隐藏控制台，标准错误写入 `<slug>.log.err`，批量通道共用批量日志。
+
 ## 你实际会看到什么
 
 通道返回固定格式、不超过 40 行的报告（这份来自 supermemory 实测）：

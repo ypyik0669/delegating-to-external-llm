@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const driver = path.join(here, "..", "scripts", "lane-run.mjs");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "dtel-lanerun-"));
+process.env.LLM_DASHBOARD = "0";
+process.env.HOME = process.env.USERPROFILE = root;
 const statusDir = path.join(root, "status");
 const repo = path.join(root, "repo");
 fs.mkdirSync(repo, { recursive: true });
@@ -29,16 +31,18 @@ B="${behaviour.replace(/\\/g, "/")}"
 node -e '
 const fs=require("fs");const b=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
 const args=process.argv.slice(2);const resumed=args.includes("--resume");
+if(b.metadata){const file=args[args.indexOf("--status-file")+1];fs.writeFileSync(file,JSON.stringify({...JSON.parse(fs.readFileSync(file,"utf8")),...b.metadata}));}
 const n=(b.calls=(b.calls||0)+1);fs.writeFileSync(process.argv[1],JSON.stringify(b));
 if(b.delay) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,b.delay);
+if(b.gate){const deadline=Date.now()+20000;while(!fs.existsSync(b.gate)&&Date.now()<deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20);}
 for(const f of (b.touch||[])) fs.appendFileSync(f, "// touched\\n");
 if(b.fixOnRound && n>=b.fixOnRound) fs.writeFileSync("add.mjs","export const add = (a, b) => a + b;\\n");
 if(b.growLock){fs.appendFileSync("bun.lock", Array.from({length:60},(_,i)=>"new "+i).join("\\n")+"\\n");}
 console.log("===== CODEX FINAL MESSAGE (stub) =====");console.log(b.say||"done");console.log("===== END =====");
 console.log("SESSION: stub-session-1");console.log("TOKENS: in=100 cached=0 out=10");
 if(b.status && b.status!=="ran"){console.log("STATUS: "+b.status);console.log("REASON: stub says so");process.exit(b.status==="refused"?3:2);}
-console.log("----- changed by this run -----");for(const f of (b.touch||[])) console.log(f);
-if(b.fixOnRound && n>=b.fixOnRound) console.log("add.mjs");
+console.log("----- changed by this run -----");if(!b.hideChanges) for(const f of (b.touch||[])) console.log(f);
+if(!b.hideChanges && b.fixOnRound && n>=b.fixOnRound) console.log("add.mjs");
 if(b.growLock) console.log("bun.lock");
 if(b.violation){console.log("SCOPE VIOLATION: "+b.violation);console.log("STATUS: ran");process.exit(5);}
 console.log("STATUS: ran");
@@ -72,6 +76,13 @@ test("complete on first round", () => {
   assert.deepEqual(r.json.changes, ["add.mjs"]);
   assert.equal(r.json.verified[0].exit, 0);
   assert.equal(r.calls, 1);
+});
+test("driver preserves resolved lane metadata through verification and completion", () => {
+  const metadata = { model: "resolved-model", effort: "high", home: "shared", access: "workspace-net" };
+  const result = runDriver(specText(), { fixOnRound: 1, metadata });
+  assert.equal(result.code, 0, result.raw);
+  const status = JSON.parse(fs.readFileSync(result.json.status_file, "utf8"));
+  for (const [key, value] of Object.entries(metadata)) assert.equal(status[key], value, key);
 });
 test("verification fails → resumes once → complete", () => {
   const r = runDriver(specText(), { fixOnRound: 2, touch: ["add.mjs"] }, ["--max-resumes", "2"]);
@@ -174,9 +185,10 @@ test("wait leaves fresh invalid-pid statuses and stale live drivers running", ()
 test("detach returns launch lines, then wait returns the saved report", () => {
   const launched = runDriver(specText(), { fixOnRound: 1 }, ["--detach"]);
   assert.equal(launched.code, 0, launched.raw);
-  const slug = launched.raw.match(/^SLUG: (.+)$/m)?.[1];
+  const slug = launched.json?.slugs[0];
   assert.ok(slug, launched.raw);
-  assert.match(launched.raw, /^SLUG: .+\r?\nSTATUS_FILE: .+\r?\nWATCH: .+\r?\n$/);
+  assert.ok(launched.json, launched.raw);
+  assert.equal(launched.json.dashboard, null);
   const result = waitFor([slug]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const status = JSON.parse(fs.readFileSync(path.join(statusDir, `${slug}.status.json`), "utf8"));
@@ -187,15 +199,73 @@ test("detach returns launch lines, then wait returns the saved report", () => {
   assert.ok(fs.existsSync(status.log_file));
 });
 
+test("Windows driver launcher uses a hidden inherited console and separate stderr", async () => {
+  const { buildDetachedLauncher } = await import("../scripts/lane-run.mjs");
+  const launcher = buildDetachedLauncher({ platform: "win32", executable: "C:\\Program Files\\node.exe", args: ["C:\\lane driver.mjs", "--analyze", 'a "quote" and apostrophe\''], logFile: "C:\\logs\\lane.log" });
+  assert.equal(launcher.command, "powershell.exe");
+  assert.match(launcher.args.join(" "), /Start-Process -WindowStyle Hidden/);
+  assert.match(launcher.args.join(" "), /-RedirectStandardError 'C:\\logs\\lane.log.err'/);
+  assert.equal(launcher.options.detached, false);
+  assert.equal(launcher.options.windowsHide, true);
+  const unix = buildDetachedLauncher({ platform: "linux", executable: "/usr/bin/node", args: ["driver.mjs"], logFile: "/tmp/lane.log" });
+  assert.equal(unix.command, "/usr/bin/node");
+  assert.equal(unix.options.detached, true);
+});
+
+test("dirty tracked and untracked files are detected by before/after hashes", async () => {
+  const { snapshotFiles, changedFiles } = await import("../scripts/lane-run.mjs");
+  fs.appendFileSync(path.join(repo, "add.mjs"), "// pre-existing change\n");
+  fs.writeFileSync(path.join(repo, "untracked.txt"), "before\n");
+  fs.writeFileSync(path.join(repo, "untouched.txt"), "keep\n");
+  const before = snapshotFiles(repo);
+  fs.appendFileSync(path.join(repo, "add.mjs"), "// lane change\n");
+  fs.writeFileSync(path.join(repo, "untracked.txt"), "after\n");
+  fs.rmSync(path.join(repo, "bun.lock"));
+  assert.deepEqual(changedFiles(before, snapshotFiles(repo)), ["add.mjs", "bun.lock", "untracked.txt"]);
+});
+
+test("LANE REPORT includes edits to already-dirty files even if the lane path list is empty", () => {
+  fs.appendFileSync(path.join(repo, "add.mjs"), "// user's dirty edit\n");
+  const result = runDriver(specText(), { fixOnRound: 1, hideChanges: true });
+  assert.equal(result.code, 0, result.raw);
+  assert.deepEqual(result.json.changes, ["add.mjs"]);
+});
+
+test("real shell reports already-dirty paths and checks them against FILES", () => {
+  const bin = path.join(root, "bin");
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, "codex"), `#!/usr/bin/env bash
+if [ "$1" = --version ]; then echo stub-codex; exit 0; fi
+printf '%s\\n' '// lane edit' >> add.mjs
+printf '%s\\n' '{"type":"thread.started","thread_id":"hash-session"}' '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}'
+`, { mode: 0o755 });
+  const spec = path.join(root, "hash.md");
+  fs.writeFileSync(spec, specText());
+  const slash = (value) => value.replace(/\\/g, "/");
+  const env = { ...process.env, HOME: slash(root), USERPROFILE: root, LANE_CODEX_HOME: slash(root), LLM_MODEL: "stub", LLM_BASE: "https://unused.invalid", LLM_KEY: "test", EVAL_CODEX_DISABLED: "", LLM_USAGE_LOG: path.join(root, "hash-usage.jsonl"), TMPDIR: slash(root), TMP: root, TEMP: root };
+  const inherited = Object.entries(env).find(([key]) => key.toUpperCase() === "PATH")?.[1] || "";
+  for (const key of Object.keys(env)) if (key.toUpperCase() === "PATH") delete env[key];
+  env.PATH = bin + path.delimiter + inherited;
+  fs.appendFileSync(path.join(repo, "add.mjs"), "// pre-existing edit\n");
+  for (const allowed of ["add.mjs", "other.mjs"]) {
+    const result = spawnSync("bash", [slash(path.join(here, "../scripts/codex-lane.sh")), "--spec", slash(spec), "--files", allowed, "--timeout", "20"], { cwd: repo, env, encoding: "utf8", windowsHide: true, timeout: 30000 });
+    assert.equal(result.status, allowed === "add.mjs" ? 0 : 5, result.stdout + result.stderr);
+    assert.match(result.stdout, /----- changed by this run -----\r?\nadd.mjs/);
+    if (allowed !== "add.mjs") assert.match(result.stdout, /SCOPE VIOLATION: add.mjs/);
+  }
+});
+
 test("wait times out with RUNNING and can be called again", () => {
-  const launched = runDriver(specText(), { fixOnRound: 1, delay: 5000 }, ["--detach"]);
-  const slug = launched.raw.match(/^SLUG: (.+)$/m)?.[1];
+  const gate = path.join(root, "release-driver");
+  const launched = runDriver(specText(), { fixOnRound: 1, gate }, ["--detach"]);
+  const slug = launched.json?.slugs[0];
   assert.ok(slug, launched.raw);
   try {
     const result = waitFor([slug], 1);
     assert.equal(result.status, 10, result.stdout + result.stderr);
     assert.match(result.stdout, new RegExp(`^RUNNING ${slug} phase=.+ elapsed=\\d+m \\d+s in=\\d+ cached=\\d+ out=\\d+ session=.+ last=".*"\\n$`));
   } finally {
+    fs.writeFileSync(gate, "release");
     assert.equal(waitFor([slug]).status, 0);
   }
 });

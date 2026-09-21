@@ -1,11 +1,34 @@
 # Changelog
 
+## 2.8.1
+
+### Fixed
+- Preserve resolved model, effort, home and access metadata throughout live lane status and driver rewrites.
+- Require a live update_plan before implementation edits; show the latest reasoning headline when no plan events exist.
+- Derive dashboard file entries from apply_patch commands and merge them with file_change events by path, with the latest successful kind winning; dim failed patches without replacing successful changes.
+- Dashboard reads `spec`/`log_file` paths from status.json verbatim; the status directory is user-owned.
+- Accept both WATCH and DASHBOARD stderr notices and isolate lane/dashboard test fixtures in the OS temporary directory.
+
+## 2.8.0
+
+### Added
+- Zero-dependency, loopback-only browser dashboard with Plan, Thinking, Commands, Files, Messages, Report and Log tabs; incremental two-second event polling, seven-day lane history, light/dark appearance, Follow control and session resume copying.
+- `/delegating-to-external-llm:dashboard` opens the dashboard. Foreground, detached and batch drivers auto-start it and print `DASHBOARD:` after `WATCH:`; JSON output includes `dashboard`. `LLM_DASHBOARD=0` disables auto-start and `LLM_DASHBOARD_PORT` selects the port (default 7788).
+- Header usage totals for 1h/24h/7d reuse the ledger's aggregation and pricing semantics; fixture-based HTTP tests cover raw events, missing artifacts and safe slug handling.
+
+### Fixed
+- Lane changes and scope checks compare per-file hashes before and after execution, including edits to files already dirty before the lane and changes retained across resumes.
+- Windows detached drivers launch through `Start-Process -WindowStyle Hidden`, with separate `.log.err` stderr and the real driver's PID. Console descendants inherit the hidden console instead of repeatedly allocating visible windows.
+
 ## 2.7.0 — 2026-09-21
 
 ### Added
 - `lane-run.mjs --detach` starts independent implementation, analysis or batch drivers on Windows and Linux, printing lane slugs, status paths and the watcher command. Status files include PID, report and log paths; every finished lane saves a verbatim `*.report.txt`.
 - `--wait <slug…> --timeout 540` polls every three seconds, returning saved reports and outcome codes (0/5/2), verbatim RUNNING snapshots on timeout (10), or MISSING after a 30-second grace period (4). Known sessions include resume commands in reports.
 - Env-only `LLM_LANE_MAX_INPUT_TOKENS` (default 3000000) stops codex when cumulative prompt usage exceeds the limit, including cached input, with a token-budget timeout reason. The live event monitor enforces it with or without status output.
+
+### Known limitations
+- batch slugs are spec basenames; two specs with the same basename collide. Duplicate basenames are rejected before launch; use unique spec filenames.
 
 ### Changed
 - Default dispatch uses one visible thin subagent per lane, launched in the same message up to the cap. Implementer and analyst wrappers only detach, echo SLUG/WATCH, wait in nine-minute slices, relay RUNNING verbatim and return LANE REPORTs. Main-session background Bash is reserved for batches.

@@ -14,7 +14,7 @@ You never read source files, inspect diffs, fix anything, or call codex directly
 node "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/delegating-to-external-llm}/scripts/lane-run.mjs" --detach --analyze "<the task, one line>" --effort <low|medium|high as given, default medium> --timeout 600 --out "<scratch>/<unique-lane>-brief.md"
 ```
 
-2. Your **first progress message** is the launcher's exact `SLUG:` and `WATCH:` lines. Preserve the returned slug and status directory across Bash calls. Relay `RESUME:` too if present; add no commentary.
+2. Your **first progress message** is the launcher's exact `SLUG:`, `WATCH:` and `DASHBOARD:` lines (when enabled). Preserve the returned slug and status directory across Bash calls. Relay `RESUME:` too if present; add no commentary.
 
 3. Make a foreground Bash call with timeout **600000 ms**:
 

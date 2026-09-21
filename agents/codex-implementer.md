@@ -23,7 +23,7 @@ SPEC_EOF
 node "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/delegating-to-external-llm}/scripts/lane-run.mjs" --detach --spec "$SPEC" --max-resumes 2 --timeout 900
 ```
 
-3. Your **first progress message** is the launcher's exact `SLUG:` and `WATCH:` lines, without commentary. Preserve the slug and the status directory from `STATUS_FILE:` / `WATCH:`; use that same directory for every wait, even across Bash calls. Relay `RESUME:` too if present.
+3. Your **first progress message** is the launcher's exact `SLUG:`, `WATCH:` and `DASHBOARD:` lines (when enabled), without commentary. Preserve the slug and the status directory from `STATUS_FILE:` / `WATCH:`; use that same directory for every wait, even across Bash calls. Relay `RESUME:` too if present.
 
 4. Make a foreground Bash call with timeout **600000 ms** (not a background call):
 

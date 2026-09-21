@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lane dashboard</title>
+<style>
+:root{color-scheme:light dark;--bg:#f3f5f8;--surface:#fff;--ink:#172337;--muted:#52627a;--line:#dbe1eb;--accent:#245aca;--tint:#eaf0ff;--good:#187548;--bad:#b42338}
+@media(prefers-color-scheme:dark){:root{--bg:#10151f;--surface:#171f2d;--ink:#e3eaf5;--muted:#a0afc6;--line:#303d52;--accent:#94b7ff;--tint:#223452;--good:#84dbad;--bad:#ffa1ad}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,sans-serif;height:100vh;height:100dvh;display:flex;flex-direction:column}button,input{font:inherit}button{cursor:pointer;color:inherit;background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:6px 10px}button:hover{border-color:var(--accent)}button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}button:disabled{opacity:.55;cursor:default}h1,h2,h3,p{margin:0}h1{font-size:20px}h2{font-size:18px;overflow-wrap:anywhere}h3{font-size:14px}small,.muted{color:var(--muted)}pre,code{font-family:ui-monospace,Consolas,monospace}pre{margin:8px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.6}code{font-size:12px;overflow-wrap:anywhere}header{padding:16px 22px;border-bottom:1px solid var(--line);background:var(--surface)}.topline,.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.topline{justify-content:space-between}.ledger{display:flex;gap:22px;margin-top:10px;flex-wrap:wrap;font-size:12px}.ledger strong{color:var(--accent)}#connection{font-size:12px;color:var(--muted)}#error{padding:6px 22px;color:var(--bad);background:var(--surface)}#error:empty{display:none}main{display:grid;grid-template-columns:310px minmax(0,1fr);flex:1;min-height:0}aside{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}.list-heading{padding:14px 16px;border-bottom:1px solid var(--line)}#lanes{overflow:auto;flex:1;padding:10px}.lane{display:block;width:100%;text-align:left;padding:12px;margin-bottom:8px;background:var(--surface)}.lane[aria-pressed=true]{border-color:var(--accent);background:var(--tint)}.lane-name{font-weight:650;overflow-wrap:anywhere}.lane .row{justify-content:space-between;margin:7px 0}.meta{font-size:12px;color:var(--muted);overflow-wrap:anywhere}.badge{font-size:11px;border:1px solid var(--line);padding:1px 7px;border-radius:20px;white-space:nowrap}.good{color:var(--good)}.bad{color:var(--bad)}.active{color:var(--accent)}.workspace{display:flex;flex-direction:column;min-width:0;min-height:0}#lane-header{padding:14px 20px;background:var(--surface);border-bottom:1px solid var(--line)}.session{margin-top:8px;font-size:12px}.watch{margin-top:6px;color:var(--muted)}nav{display:flex;padding:8px 14px;gap:5px;border-bottom:1px solid var(--line);align-items:center;flex-wrap:wrap}nav button{border-color:transparent;background:transparent;padding:6px 9px}nav button[aria-selected=true]{background:var(--tint);color:var(--accent);border-color:var(--line)}.follow{margin-left:auto;font-size:12px;white-space:nowrap}#content{overflow:auto;flex:1;padding:20px;min-height:0;scrollbar-gutter:stable}.empty{padding:36px 10px;color:var(--muted);text-align:center}.entry{border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:12px 14px;margin-bottom:12px}.entry .row{justify-content:space-between}.timeline{border-left:2px solid var(--line);padding-left:16px}.timeline .entry{position:relative}.timeline .entry:before{content:"";position:absolute;left:-23px;top:18px;width:10px;height:10px;background:var(--accent);border-radius:50%}details{margin-top:8px}summary{cursor:pointer;color:var(--muted);font-size:12px}.checklist{list-style:none;padding:0;margin:0}.checklist li{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}.checklist input{accent-color:var(--accent);flex-shrink:0}.checklist .complete{text-decoration:line-through;color:var(--muted)}.spinner{display:inline-block;width:11px;height:11px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;margin-right:6px}@keyframes spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.spinner{animation:none}}@media(max-width:1000px){main{grid-template-columns:260px minmax(0,1fr)}header{padding:12px 16px}.ledger{gap:14px}#content{padding:14px}#lane-header{padding:12px 14px}nav{padding:8px}nav button{padding:5px 7px}}@media(max-width:650px){main{grid-template-columns:190px minmax(0,1fr)}.ledger{gap:8px}.lane{padding:8px}#lanes{padding:6px}.follow{margin-left:0}}
+.entry.failed{opacity:.55;color:var(--muted)}.entry.failed code{text-decoration:line-through}
+</style>
+</head>
+<body>
+<header>
+  <div class="topline"><div><h1>Lane dashboard</h1><small>Local execution history · last 7 days</small></div><span id="connection" role="status">Connecting…</span></div>
+  <div id="ledger" class="ledger" aria-label="Usage totals">Ledger: loading 1h / 24h / 7d totals…</div>
+</header>
+<div id="error" role="status"></div>
+<main>
+  <aside aria-label="Lane list"><div class="list-heading"><strong>Lanes</strong> <small id="lane-count"></small></div><div id="lanes"><p class="empty">Loading lanes…</p></div></aside>
+  <section class="workspace" aria-label="Selected lane">
+    <div id="lane-header"><h2 id="slug">Select a lane</h2><div class="row"><span id="phase" class="badge">—</span><span id="lane-meta" class="meta"></span></div><div class="session row"><span>SESSION: <code id="session">unknown</code></span><button id="copy" disabled>Copy resume</button><code id="resume"></code></div><div class="watch">WATCH: <code id="watch">—</code></div></div>
+    <nav role="tablist" aria-label="Lane details">
+      <button id="tab-plan" role="tab" aria-selected="true" aria-controls="content" data-tab="Plan">Plan</button>
+      <button id="tab-thinking" role="tab" aria-selected="false" aria-controls="content" data-tab="Thinking">Thinking</button>
+      <button id="tab-commands" role="tab" aria-selected="false" aria-controls="content" data-tab="Commands">Commands</button>
+      <button id="tab-files" role="tab" aria-selected="false" aria-controls="content" data-tab="Files">Files</button>
+      <button id="tab-messages" role="tab" aria-selected="false" aria-controls="content" data-tab="Messages">Messages</button>
+      <button id="tab-report" role="tab" aria-selected="false" aria-controls="content" data-tab="Report">Report</button>
+      <button id="tab-log" role="tab" aria-selected="false" aria-controls="content" data-tab="Log">Log</button>
+      <label class="follow"><input id="follow" type="checkbox" checked> Follow</label>
+    </nav>
+    <div id="content" role="tabpanel" aria-labelledby="tab-plan" tabindex="0"><p class="empty">Select a lane to inspect its recorded events.</p></div>
+  </section>
+</main>
+<script>
+const element = (id) => document.getElementById(id);
+const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
+const number = (value) => Number(value || 0).toLocaleString("en-US");
+const empty = (text) => `<p class="empty">${escape(text)}</p>`;
+const terminal = (lane) => String(lane.phase || "").startsWith("done ");
+const elapsed = (lane) => {
+  const seconds = Math.max(0, Math.floor(!terminal(lane) && Date.parse(lane.started_at) ? (Date.now() - Date.parse(lane.started_at)) / 1000 : Number(lane.elapsed_s || 0)));
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+};
+const tokens = (value = {}) => `in ${number(value.in ?? value.input_tokens ?? value.prompt_tokens)} · cached ${number(value.cached ?? value.cached_input_tokens ?? value.cached_tokens)} · out ${number(value.out ?? value.output_tokens ?? value.completion_tokens)}`;
+const phaseClass = (lane) => !terminal(lane) ? "active" : /complete|ran/.test(lane.phase) ? "good" : "bad";
+const request = async (route) => { const response = await fetch(route, { cache: "no-store" }); if (!response.ok) throw new Error(`Request failed (${response.status})`); return response.json(); };
+let selected = null, tab = "Plan", lanes = [], state = null, lastMarkup = "", renderedKey = null, polling = false, usageAt = 0;
+const histories = new Map();
+const newState = () => ({ cursor: 0, thread: 0, items: new Map(), files: new Map(), reasoning: "", messages: [], plan: null, detail: null, positions: {}, expanded: new Set() });
+
+function ingest(events) {
+  for (const event of events) {
+    if (event.type === "thread.started") state.thread++;
+    if (event.item) {
+      const item = event.item;
+      const key = `${state.thread}:${item.id ?? `event-${state.items.size}`}`;
+      const previous = state.items.get(key);
+      state.items.set(key, { ...previous, ...item, key });
+      if (!previous && ["agent_message", "error", "mcp_tool_call"].includes(item.type)) state.messages.push({ key });
+      if (item.type === "todo_list") state.plan = item.items || [];
+      if (item.type === "reasoning" && item.text) state.reasoning = item.text.trim().split(/\r?\n/)[0];
+    }
+    const changes = event.item?.type === "file_change" ? event.item.changes || [] : [];
+    for (const change of [...(event.derived_files || []), ...changes]) {
+      const kind = ({ added: "add", modified: "update", deleted: "delete" })[change.kind] || change.kind || "update";
+      if (kind !== "failed" || !state.files.has(change.path)) state.files.set(change.path, kind);
+    }
+    if (event.type === "turn.completed" && event.usage) state.messages.push({ usage: event.usage });
+    if (["error", "turn.failed"].includes(event.type)) state.messages.push({ error: event.message || event.error?.message || JSON.stringify(event) });
+  }
+}
+
+function drawList() {
+  const list = element("lanes"), top = list.scrollTop;
+  const sorted = [...lanes].sort((first, second) => Number(terminal(first)) - Number(terminal(second)));
+  list.innerHTML = sorted.map((lane) => `<button class="lane" data-slug="${escape(lane.slug)}" aria-pressed="${lane.slug === selected}"><div class="lane-name">${escape(lane.slug)}</div><div class="row"><span class="badge ${phaseClass(lane)}">${escape(lane.phase)}</span><small>${elapsed(lane)}</small></div><div class="meta">${tokens(lane.tokens)}</div><div class="meta">${escape(lane.effort || "default")} · ${escape(lane.model || "unknown model")}</div><div class="meta">home: ${escape(lane.home || "unknown")}</div></button>`).join("") || empty("No lanes updated in the last 7 days.");
+  list.scrollTop = top;
+  element("lane-count").textContent = `(${lanes.length})`;
+}
+
+function savePosition() {
+  if (!state || renderedKey !== `${selected}:${tab}`) return;
+  state.positions[tab] = { top: element("content").scrollTop, left: element("content").scrollLeft };
+  for (const detail of element("content").querySelectorAll("details[data-key]")) {
+    if (detail.open) state.expanded.add(detail.dataset.key); else state.expanded.delete(detail.dataset.key);
+  }
+}
+
+function drawContent() {
+  if (!state) return;
+  const items = [...state.items.values()], detail = state.detail || {};
+  let markup = "";
+  if (tab === "Plan") markup = state.plan === null ? empty(`no update_plan calls — latest reasoning: ${state.reasoning || "none reported"}`) : `<ul class="checklist">${state.plan.map((item) => `<li><input type="checkbox" disabled ${item.completed ? "checked" : ""} aria-label="${escape(item.text)}"><span class="${item.completed ? "complete" : ""}">${escape(item.text)}</span></li>`).join("")}</ul>`;
+  if (tab === "Thinking") markup = `<div class="timeline">${items.filter((item) => item.type === "reasoning").map((item, index) => `<article class="entry"><small>Reasoning ${index + 1}</small><pre>${escape(item.text)}</pre></article>`).join("")}</div>`;
+  if (tab === "Commands") markup = items.filter((item) => item.type === "command_execution").map((item) => `<article class="entry"><div class="row"><strong>Command</strong><span class="badge ${item.exit_code === 0 ? "good" : item.exit_code != null ? "bad" : "active"}">${item.status === "in_progress" ? '<span class="spinner"></span>running' : `exit ${escape(item.exit_code ?? "—")} · ${escape(item.status || "unknown")}`}</span></div><pre>${escape(item.command)}</pre><details data-key="${escape(item.key)}"><summary>Output · ${number((item.aggregated_output || "").length)} characters</summary><pre>${escape(item.aggregated_output || "No output yet.")}</pre></details></article>`).join("");
+  if (tab === "Files") {
+    markup = [...state.files].map(([file, kind]) => `<article class="entry${kind === "failed" ? " failed" : ""}"><div class="row"><code>${escape(file)}</code><span class="badge">${escape(kind)}</span></div></article>`).join("");
+    const changes = (detail.report || "").match(/^CHANGES:([^\n]*(?:\n(?![A-Z][A-Z _]*:).*)*)/m)?.[0];
+    if (changes) markup += `<article class="entry"><h3>Report changes</h3><pre>${escape(changes)}</pre></article>`;
+  }
+  if (tab === "Messages") markup = state.messages.map((message) => {
+    if (message.usage) return `<article class="entry"><small>Turn completed · ${tokens(message.usage)}</small></article>`;
+    const item = state.items.get(message.key);
+    const text = message.error || item?.text || item?.message || JSON.stringify(item, null, 2);
+    return `<article class="entry"><small>${escape(item?.type || "error")}</small><pre>${escape(text)}</pre></article>`;
+  }).join("");
+  if (tab === "Report") markup = `<article class="entry"><pre>${escape(detail.report ?? "No report yet.")}</pre><details data-key="spec"><summary>Spec</summary><pre>${escape(detail.spec_text ?? "Spec unavailable.")}</pre></details></article>`;
+  if (tab === "Log") markup = `<article class="entry"><small>Log tail · last 64 KiB</small><pre>${escape(detail.log ?? "No log yet.")}</pre></article>`;
+  if (!markup || markup === '<div class="timeline"></div>') markup = empty(`No ${tab.toLowerCase()} reported.`);
+  if (markup === lastMarkup) return;
+  savePosition();
+  const panel = element("content");
+  panel.innerHTML = markup;
+  for (const details of panel.querySelectorAll("details[data-key]")) details.open = state.expanded.has(details.dataset.key);
+  const position = state.positions[tab] || { top: 0, left: 0 };
+  panel.scrollTop = element("follow").checked ? panel.scrollHeight : position.top;
+  panel.scrollLeft = position.left;
+  lastMarkup = markup;
+  renderedKey = `${selected}:${tab}`;
+}
+
+async function pollSelected() {
+  const slug = selected, current = state;
+  if (!slug || current.loading) return;
+  current.loading = true;
+  try {
+  const [detail, batch] = await Promise.all([request(`/api/lanes/${encodeURIComponent(slug)}`), request(`/api/lanes/${encodeURIComponent(slug)}/events?from=${current.cursor}`)]);
+  if (selected !== slug || state !== current) return;
+  if ((current.detail && current.detail.started_at !== detail.started_at) || batch.next < current.cursor) {
+    state = newState(); histories.set(slug, state); lastMarkup = "";
+    const fresh = await request(`/api/lanes/${encodeURIComponent(slug)}/events?from=0`);
+    if (selected !== slug) return;
+    ingest(fresh.events); state.cursor = fresh.next;
+  } else { ingest(batch.events); state.cursor = batch.next; }
+  state.detail = detail;
+  element("slug").textContent = slug;
+  element("phase").textContent = detail.phase || "unknown";
+  element("phase").className = `badge ${phaseClass(detail)}`;
+  element("lane-meta").textContent = `${elapsed(detail)} · ${tokens(detail.tokens)}`;
+  const session = detail.session || "unknown";
+  element("session").textContent = session;
+  element("copy").disabled = session === "unknown";
+  element("resume").textContent = session === "unknown" ? "" : `codex resume ${session}`;
+  element("watch").textContent = detail.watch || "—";
+  drawContent();
+  } finally { current.loading = false; }
+}
+
+async function selectLane(slug) {
+  savePosition(); selected = slug;
+  if (!histories.has(slug)) histories.set(slug, newState());
+  state = histories.get(slug); lastMarkup = ""; renderedKey = null;
+  element("content").innerHTML = empty("Loading lane…");
+  drawList();
+  try { await pollSelected(); } catch (error) { element("error").textContent = error.message; }
+}
+element("lanes").addEventListener("click", (event) => { const button = event.target.closest("[data-slug]"); if (button) selectLane(button.dataset.slug); });
+for (const button of document.querySelectorAll("[data-tab]")) button.addEventListener("click", () => {
+  savePosition(); tab = button.dataset.tab; lastMarkup = ""; renderedKey = null;
+  for (const sibling of document.querySelectorAll("[data-tab]")) sibling.setAttribute("aria-selected", String(sibling === button));
+  element("content").setAttribute("aria-labelledby", button.id);
+  element("content").innerHTML = "";
+  drawContent();
+});
+element("follow").addEventListener("change", () => { if (element("follow").checked) element("content").scrollTop = element("content").scrollHeight; });
+element("copy").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText(element("resume").textContent); element("copy").textContent = "Copied"; setTimeout(() => { element("copy").textContent = "Copy resume"; }, 1500); }
+  catch { element("error").textContent = "Clipboard unavailable; select and copy the resume command."; }
+});
+
+async function poll() {
+  if (polling) return;
+  polling = true;
+  try {
+    lanes = await request("/api/lanes"); drawList();
+    if (!selected && lanes.length) await selectLane([...lanes].sort((first, second) => Number(terminal(first)) - Number(terminal(second)))[0].slug);
+    else await pollSelected();
+    if (Date.now() - usageAt > 10000) {
+      const windows = ["1h", "24h", "7d"];
+      const summaries = await Promise.all(windows.map((since) => request(`/api/usage?since=${since}`)));
+      element("ledger").innerHTML = summaries.map((summary, index) => `<span><strong>${windows[index]}</strong> · ${tokens(summary.total)}${summary.usd.priced ? ` · $${(summary.usd.external + summary.usd.claude).toFixed(4)}` : ""}</span>`).join("");
+      usageAt = Date.now();
+    }
+    element("connection").textContent = `Live · refreshed ${new Date().toLocaleTimeString()}`;
+    element("error").textContent = "";
+  } catch (error) { element("connection").textContent = "Reconnecting…"; element("error").textContent = error.message; }
+  finally { polling = false; }
+}
+poll(); setInterval(poll, 2000);
+</script>
+</body>
+</html>

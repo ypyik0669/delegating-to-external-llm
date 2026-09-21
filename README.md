@@ -91,6 +91,29 @@ Every dispatch reply includes the exact `WATCH:` line. Run the command after tha
 
 The live event monitor enforces `LLM_LANE_MAX_INPUT_TOKENS=3000000` per codex invocation, counting cached input too. Set this env-only key in `~/.claude/llm-relay.env` (or override it in the environment); setup does not prompt for it. Exceeding it kills codex and reports `STATUS: timeout` with `REASON: token budget exceeded (<n> > <limit>)`. New private homes request concise reasoning summaries for progress visibility; existing configs are preserved.
 
+### Dashboard
+
+Every dispatch includes a `DASHBOARD: http://127.0.0.1:7788` line immediately after `WATCH:` (unless disabled or startup fails). Foreground, detached and batch runs start the dashboard automatically. Open that URL or run `/delegating-to-external-llm:dashboard`.
+
+| Tab | Shows |
+|---|---|
+| Plan | Latest reported todo checklist; “no plan reported” when absent |
+| Thinking | Recorded reasoning summaries, oldest to newest |
+| Commands | Commands, running indicators, exit codes and collapsible output |
+| Files | Changes grouped by path and the report's CHANGES block |
+| Messages | Agent messages, per-turn usage, errors and MCP calls |
+| Report | Final report plus a collapsible spec |
+| Log | Last 64 KiB of the lane log |
+
+The list shows active lanes first, phase, elapsed time, input/cached/output tokens, effort, model and home. The header has the session ID, a copyable `codex resume` command, WATCH command and ledger totals for 1h/24h/7d. Lane and event polling runs every two seconds; disable **Follow** to preserve your reading position. History lists lanes updated within seven days without deleting artifacts. Only recorded reasoning summaries are displayed, not unreported internal reasoning.
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/lane-dashboard.mjs" --open
+node "${CLAUDE_PLUGIN_ROOT}/scripts/lane-dashboard.mjs" --port 7789 --dir "<status-directory>"
+```
+
+Set `LLM_DASHBOARD=0` in the environment or `~/.claude/llm-relay.env` to disable auto-start; `LLM_DASHBOARD_PORT=7788` selects the port (environment wins). Explicit `--open` still works when auto-start is off. Status-directory resolution is `--dir` → `LANE_STATUS_DIR` → `$CLAUDE_SCRATCHPAD_DIR/lanes` → `~/.claude/lane-status`. One port serves one status directory: reuse that directory across lanes, or choose a different port for a separate dashboard. Existing dashboards are reused; unrelated port occupants are not replaced. The server binds only `127.0.0.1`, loads no external resources and does not execute commands from events. Stop a foreground server with Ctrl+C. On Windows detached drivers use a hidden console and write stderr to `<slug>.log.err` (batch lanes share the batch log).
+
 ## What you actually see
 
 A lane returns a fixed, ≤ 40-line report (this one is from the supermemory run):

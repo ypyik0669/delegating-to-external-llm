@@ -11,7 +11,7 @@ const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const watcher = path.join(project, "scripts", "lane-status.mjs");
 
 function streamingFixture() {
-  const root = fs.mkdtempSync(path.join(project, "tests", ".lane-stream-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dtel-lane-stream-"));
   const bin = path.join(root, "bin");
   const cwd = path.join(root, "work");
   const home = path.join(root, "home");
@@ -62,6 +62,7 @@ test("codex streams live events, preserves resume metadata, and records spaced J
     assert.equal(live.phase, "resume 1/2");
     assert.equal(live.spec, fixture.spec);
     assert.equal(live.session, "live-session");
+    for (const [key, value] of Object.entries({ model: "stub", effort: "default", home: fixture.env.LANE_CODEX_HOME, access: "workspace" })) assert.equal(live[key], value, key);
     assert.match(fs.readFileSync(path.join(path.dirname(fixture.statusFile), "stream.events.jsonl"), "utf8"), /command_execution/);
     fs.writeFileSync(fixture.gate, "release");
     assert.equal(await finished, 0, output);
@@ -70,6 +71,7 @@ test("codex streams live events, preserves resume metadata, and records spaced J
     assert.equal(final.last_message.length, 200);
     assert.deepEqual(final.tokens, { in: 17, cached: 4, out: 9 });
     assert.equal(final.exit, 0);
+    for (const key of ["model", "effort", "home", "access"]) assert.equal(final[key], live[key], key);
     assert.match(output, /TOKENS: in=17 cached=4 out=9/);
     assert.equal(fs.readdirSync(path.dirname(fixture.statusFile)).filter((name) => name.endsWith(".tmp")).length, 0);
   } finally {
@@ -176,7 +178,7 @@ test("wall-clock timeout still stops a lane with no usage events", { timeout: 60
 });
 
 test("status CLI runs on Windows, handles missing directories, and sorts JSON", () => {
-  const root = fs.mkdtempSync(path.join(project, "tests", ".status-cli-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dtel-status-cli-"));
   try {
     const missing = spawnSync(process.execPath, [watcher, "--dir", path.join(root, "missing")], { encoding: "utf8" });
     assert.equal(missing.status, 0, missing.stderr);
@@ -251,8 +253,8 @@ REASONING: low
     assert.deepEqual(status.tokens, { in: 1, cached: 0, out: 1 });
     assert.equal(status.session, "stub-session");
     assert.equal(status.exit, 0);
-    assert.equal(result.stderr.trim().split(/\r?\n/).length, 1);
     assert.match(result.stderr, /^WATCH: node ".*lane-status.mjs" --watch --dir "/);
+    assert.match(result.stderr, /^DASHBOARD: http:\/\/127\.0\.0\.1:\d+/m);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

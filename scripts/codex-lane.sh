@@ -130,7 +130,7 @@ status_write() {
   [ -n "$STATUS_FILE" ] || return 0
   node -e '
 const fs=require("fs"),path=require("path");
-const [file,phase,exitValue,slug,mode,spec,started,session,tin,tcached,tout,message]=process.argv.slice(1);
+const [file,phase,exitValue,slug,mode,spec,started,session,tin,tcached,tout,message,model,effort,home,access]=process.argv.slice(1);
 try {
   let current={}; try { current=JSON.parse(fs.readFileSync(file,"utf8"))||{}; } catch {}
   if(!phase && String(current.phase||"").startsWith("done ")) current={};
@@ -138,13 +138,14 @@ try {
   const startedAt=current.started_at||started||now.toISOString();
   const elapsed=Math.max(0,(now.getTime()-Date.parse(startedAt))/1000);
   const driverFinishes=current.report_file&&phase.startsWith("done ");
+  current={...current,model,effort,home,access};
   current={...current,slug:slug||current.slug||"",mode:mode||current.mode||"",spec:current.spec||spec||"",phase:driverFinishes?current.phase:(phase||current.phase||"running"),started_at:startedAt,updated_at:now.toISOString(),elapsed_s:Math.round(elapsed*10)/10,tokens:{in:Number(tin||current.tokens?.in||0),cached:Number(tcached||current.tokens?.cached||0),out:Number(tout||current.tokens?.out||0)},session:session||current.session||"unknown",last_message:(message||current.last_message||"").slice(0,200),exit:driverFinishes||exitValue===""?(current.exit??null):Number(exitValue)};
   fs.mkdirSync(path.dirname(file),{recursive:true});
   const tmp=`${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp,JSON.stringify(current)+"\n","utf8");
   try { fs.renameSync(tmp,file); } catch (error) { try { fs.rmSync(tmp,{force:true}); } catch {} throw error; }
 } catch (error) { process.stderr.write(`lane status write failed: ${error.message}\n`); }
-' "$STATUS_NATIVE_FILE" "$1" "${2:-}" "$STATUS_SLUG" "$MODE" "$SPEC" "$STATUS_STARTED_AT" "${SESSION:-unknown}" "${TOK_IN:-0}" "${TOK_CACHED:-0}" "${TOK_OUT:-0}" "${3:-}" >/dev/null || true
+' "$STATUS_NATIVE_FILE" "$1" "${2:-}" "$STATUS_SLUG" "$MODE" "$SPEC" "$STATUS_STARTED_AT" "${SESSION:-unknown}" "${TOK_IN:-0}" "${TOK_CACHED:-0}" "${TOK_OUT:-0}" "${3:-}" "${MODEL:-codex-default}" "${EFFORT:-default}" "$HOME_LABEL" "$ACCESS" >/dev/null || true
 }
 
 if [ -n "$STATUS_FILE" ]; then
@@ -182,7 +183,8 @@ PROMPT=$(mktemp -t codex-spec.XXXXXX)
 FINAL=$(mktemp -t codex-final.XXXXXX)
 ERRLOG=$(mktemp -t codex-err.XXXXXX)
 EVENTS=$(mktemp -t codex-events.XXXXXX)
-trap 'rm -f "$PROMPT" "$FINAL" "$ERRLOG" "$EVENTS" "$EVENTS.summary"' EXIT
+HASH_BEFORE=$(mktemp -t codex-hashes.XXXXXX)
+trap 'rm -f "$PROMPT" "$FINAL" "$ERRLOG" "$EVENTS" "$EVENTS.summary" "$HASH_BEFORE"' EXIT
 
 case "$MODE" in
   implement)
@@ -205,7 +207,8 @@ Rules for this lane:
 - Run the verification command and include its actual output in your final
   message.
 - List any judgment calls you made that the spec left open.
-- Keep a plan via your update_plan tool and refresh it as items complete.
+- Before the first edit, call update_plan with 3-8 concrete steps; update it as each step completes.
+  The plan is displayed to the user live.
 
 PREAMBLE
         cat "$SPEC"
@@ -245,6 +248,7 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   changed_paths() { { git diff HEAD --name-only; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u; }
   BEFORE=$(snapshot)
   BEFORE_PATHS=$(changed_paths)
+  node -e 'import(require("node:url").pathToFileURL(process.argv[2]).href).then(({snapshotFiles})=>require("node:fs").writeFileSync(process.argv[3],JSON.stringify(snapshotFiles(process.cwd()))));' snapshot "$HERE/lane-run.mjs" "$HASH_BEFORE"
   # linked worktree? then also watch the main working tree for stray writes
   COMMON=$(git rev-parse --git-common-dir 2>/dev/null)
   GITDIR=$(git rev-parse --git-dir 2>/dev/null)
@@ -284,9 +288,10 @@ export LLM_RELAY_KEY="$LLM_KEY"
 capture_codex() {
   node -e '
 const fs=require("fs"),path=require("path"),{spawn,spawnSync}=require("child_process");
-const [statusFile,eventsFile,publicEventsFile,errorFile,limitText,resume,timeoutText,...command]=process.argv.slice(1);
+const [statusFile,eventsFile,publicEventsFile,errorFile,limitText,resume,timeoutText,model,effort,home,access,...command]=process.argv.slice(1);
 const limit=Number(limitText);
 let status={}; if(statusFile) { try { status=JSON.parse(fs.readFileSync(statusFile,"utf8"))||{}; } catch {} }
+status={...status,model,effort,home,access};
 let session=resume||"unknown",budgetReason="",carry="",timedOut=false;
 const completed={in:0,cached:0,out:0},counted={in:0,cached:0,out:0};
 let tokens={in:0,cached:0,out:0};
@@ -296,7 +301,7 @@ const atomic=()=>{ if(!statusFile) return; try { fs.mkdirSync(path.dirname(statu
 let publicEvents=null;
 if(publicEventsFile) { try { fs.mkdirSync(path.dirname(publicEventsFile),{recursive:true}); publicEvents=fs.openSync(publicEventsFile,"a"); } catch(error) { process.stderr.write(`lane events write failed: ${error.message}\n`); } }
 const events=fs.openSync(eventsFile,"a"),errors=fs.openSync(errorFile,"w");
-const child=spawn("bash",["-c",process.platform==="win32"?"\"$@\"; exit $?":"exec \"$@\"","lane-codex",...command],{detached:true,windowsHide:true,stdio:["inherit","pipe",errors]});
+const child=spawn("bash",["-c",process.platform==="win32"?"\"$@\"; exit $?":"exec \"$@\"","lane-codex",...command],{detached:process.platform!=="win32",windowsHide:true,stdio:["inherit","pipe",errors]});
 fs.closeSync(errors);
 const stop=()=>{
   if(process.platform==="win32") {
@@ -343,7 +348,7 @@ child.on("close",(code,signal)=>{
   fs.writeFileSync(eventsFile+".summary",JSON.stringify({session,tokens,budgetReason}));
   process.exitCode=budgetReason?4:timedOut?124:(code??(signal?137:2));
 });
-' "$STATUS_NATIVE_FILE" "$EVENTS" "$STATUS_EVENTS_FILE" "$ERRLOG" "$LLM_LANE_MAX_INPUT_TOKENS" "$RESUME" "$TIMEOUT" "$@"
+' "$STATUS_NATIVE_FILE" "$EVENTS" "$STATUS_EVENTS_FILE" "$ERRLOG" "$LLM_LANE_MAX_INPUT_TOKENS" "$RESUME" "$TIMEOUT" "${MODEL:-codex-default}" "${EFFORT:-default}" "$HOME_LABEL" "$ACCESS" "$@"
 }
 
 case "$MODE" in
@@ -436,14 +441,13 @@ if [ "$have_git" -eq 1 ]; then
       fi
     fi
   fi
-  AFTER=$(snapshot)
-  if [ "$BEFORE" = "$AFTER" ]; then
+  NEW_PATHS=$(node -e 'import(require("node:url").pathToFileURL(process.argv[2]).href).then(({snapshotFiles,changedFiles})=>{const before=JSON.parse(require("node:fs").readFileSync(process.argv[3],"utf8"));process.stdout.write(changedFiles(before,snapshotFiles(process.cwd())).join("\n"));});' snapshot "$HERE/lane-run.mjs" "$HASH_BEFORE")
+  if [ -z "$NEW_PATHS" ]; then
     echo "STATUS: refused"
     echo "REASON: codex exited 0 but the working tree did not change (see final message above)"
     status_write "done refused" 3
     log_usage refused "$TOK_IN" "$TOK_CACHED" "$TOK_OUT" "$SESSION"; exit 3
   fi
-  NEW_PATHS=$(comm -13 <(printf '%s\n' "$BEFORE_PATHS") <(changed_paths))
   echo "----- changed by this run -----"
   printf '%s\n' "$NEW_PATHS"
   if [ -n "$FILES" ]; then
