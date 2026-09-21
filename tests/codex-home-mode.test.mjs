@@ -24,6 +24,14 @@ function fixture(setting) {
     `LLM_BASE=https://unused.invalid\nLLM_KEY=test-key\n${setting === undefined ? "" : `LLM_CODEX_HOME=${setting}\n`}`);
   fs.writeFileSync(path.join(bin, "codex"), `#!/usr/bin/env bash
 if [ "$1" = --version ]; then echo stub-codex; exit 0; fi
+if [ -n "$PROMPT_DUMP" ]; then cat > "$PROMPT_DUMP"; fi
+if [ "$WRITE_SCRATCH" = 1 ]; then
+  mkdir -p .lane-scratch/nested
+  printf 'brief\\n' > .lane-scratch/nested/brief.md
+  printf 'updated\\n' > .lane-scratch/tracked.md
+  printf 'stray\\n' > outside.txt
+  printf 'stray\\n' > 'tracked file.txt'
+fi
 final=""; model=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -45,8 +53,8 @@ exit 0
   env.PATH = bin + path.delimiter + inheritedPath;
   return { home, cwd, env };
 }
-function run(f) {
-  const r = spawnSync("bash", [slash(path.join(root, "scripts/codex-lane.sh")), "--analyze", "test home"], {
+function run(f, args = ["--analyze", "test home"]) {
+  const r = spawnSync("bash", [slash(path.join(root, "scripts/codex-lane.sh")), ...args], {
     cwd: f.cwd, env: f.env, encoding: "utf8", timeout: 60000,
   });
   return { ...r, raw: r.stdout + r.stderr };
@@ -62,6 +70,57 @@ function ran(f, expectedHome, label) {
   assert.equal(row.home, label);
   assert.equal(row.status, "ran");
   return r;
+}
+
+for (const transport of ["--analyze", "--task", "--task-file"]) {
+  test(`analysis prompt preserves literal task bytes via ${transport}`, () => {
+    const f = fixture();
+    const task = 'Inspect src/a & (b) \'single\' "double" | \\ $HOME $(echo unsafe) $& {{TASK}}\nsecond line\n\n';
+    const taskFile = path.join(f.home, "task text.md");
+    fs.writeFileSync(taskFile, task);
+    f.env.PROMPT_DUMP = slash(path.join(f.home, "prompt.md"));
+    const args = transport === "--analyze" ? [transport, task] : ["--analyze", "ignored", transport, transport === "--task-file" ? slash(taskFile) : task];
+    const result = run(f, args);
+    assert.equal(result.status, 0, result.raw);
+    const template = fs.readFileSync(path.join(root, "templates/analysis-prompt.md"), "utf8");
+    const expected = Buffer.from(template.replace("{{TASK}}", () => task));
+    assert.deepEqual(fs.readFileSync(f.env.PROMPT_DUMP).subarray(0, expected.length), expected);
+  });
+}
+
+for (const mode of ["--analyze", "--review"]) {
+  test(`${mode} retains scratch artifacts but reverts other writes`, () => {
+    const f = fixture();
+    const git = (...args) => {
+      const result = spawnSync("git", args, { cwd: f.cwd, env: f.env, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      return result.stdout;
+    };
+    git("init", "-q");
+    git("config", "core.autocrlf", "false");
+    fs.mkdirSync(path.join(f.cwd, ".lane-scratch"));
+    fs.writeFileSync(path.join(f.cwd, ".lane-scratch/tracked.md"), "original\n");
+    fs.writeFileSync(path.join(f.cwd, "tracked file.txt"), "original\n");
+    git("add", "-A");
+    git("-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture");
+    f.env.WRITE_SCRATCH = "1";
+    const out = path.join(f.cwd, ".lane-scratch/output-brief.md");
+    const args = [...(mode === "--analyze" ? [mode, "inspect"] : [mode]), "--out", slash(out)];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = run(f, args);
+      assert.equal(result.status, 0, result.raw);
+      assert.equal(fs.readFileSync(path.join(f.cwd, ".lane-scratch/nested/brief.md"), "utf8"), "brief\n");
+      assert.equal(fs.readFileSync(path.join(f.cwd, ".lane-scratch/tracked.md"), "utf8"), "updated\n");
+      assert.match(fs.readFileSync(out, "utf8"), /CODEX_HOME=/);
+      assert.equal(fs.existsSync(path.join(f.cwd, "outside.txt")), false);
+      assert.equal(fs.readFileSync(path.join(f.cwd, "tracked file.txt"), "utf8"), "original\n");
+      assert.match(result.stdout, /STRAY WRITES.*outside.txt/);
+      assert.doesNotMatch(result.stdout.match(/STRAY WRITES.*/)?.[0] || "", /\.lane-scratch/);
+    }
+    const exclude = fs.readFileSync(path.join(f.cwd, ".git/info/exclude"), "utf8");
+    assert.equal(exclude.split(/\r?\n/).filter((line) => line === "/.lane-scratch/").length, 1);
+    assert.match(git("check-ignore", ".lane-scratch/nested/brief.md"), /brief.md/);
+  });
 }
 
 test("default private home is created and seeded byte-for-byte", () => {

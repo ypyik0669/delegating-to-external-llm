@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.8.2
+
+### Fixed
+- Preserve analysis task text literally, including quotes, shell metacharacters and newlines, instead of interpolating it into sed or shell commands.
+- Add --task-file to the driver and shell lane; file input takes precedence over inline tasks. Detached analysis also passes only the task file path, and the analyst wrapper prefers file input.
+- Keep analysis/review artifacts under .lane-scratch/ while reverting other new writes; register /.lane-scratch/ in the target repository's local Git exclude file. Reports and --out continue to use the model's final message.
+- Cover literal prompt bytes, foreground/detached file transport, and scratch preservation alongside stray-write cleanup with stub-based regression tests.
+
 ## 2.8.1
 
 ### Fixed

@@ -31,6 +31,7 @@ B="${behaviour.replace(/\\/g, "/")}"
 node -e '
 const fs=require("fs");const b=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
 const args=process.argv.slice(2);const resumed=args.includes("--resume");
+if(b.captureTask){const file=args[args.indexOf("--task-file")+1];b.task=fs.readFileSync(file,"utf8");b.args=args;}
 if(b.metadata){const file=args[args.indexOf("--status-file")+1];fs.writeFileSync(file,JSON.stringify({...JSON.parse(fs.readFileSync(file,"utf8")),...b.metadata}));}
 const n=(b.calls=(b.calls||0)+1);fs.writeFileSync(process.argv[1],JSON.stringify(b));
 if(b.delay) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,b.delay);
@@ -300,6 +301,32 @@ test("wait passes through partial and refused outcomes and chooses the worst", (
   assert.equal(result.status, 2, result.stdout + result.stderr);
   assert.equal((result.stdout.match(/^LANE REPORT$/gm) || []).length, 2);
 });
+
+for (const detached of [false, true]) {
+  for (const fileInput of [false, true]) {
+    test(`analyze literal task transport: detached=${detached}, file=${fileInput}`, () => {
+      const task = 'src/a & (b) \'single\' "double" $HOME $(echo unsafe)\nnext line\n\n' + (fileInput ? "long task\n".repeat(12000) : "");
+      const taskFile = path.join(root, "task input.md");
+      fs.writeFileSync(taskFile, task);
+      fs.writeFileSync(behaviour, JSON.stringify({ captureTask: true, say: "BRIEF: literal analysis" }));
+      const args = [driver, "--analyze", ...(fileInput && detached ? [] : [fileInput ? "ignored" : task]), "--cwd", repo, "--status-dir", statusDir];
+      if (fileInput) args.push("--task-file", taskFile);
+      if (detached) args.push("--detach");
+      const result = spawnSync(process.execPath, args, { cwd: root, encoding: "utf8", env: { ...process.env, LANE_RUN_LANE_SH: stub } });
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      if (detached) {
+        const waited = waitFor([result.stdout.match(/^SLUG: (.+)$/m)?.[1]]);
+        assert.equal(waited.status, 0, waited.stdout + waited.stderr);
+        assert.match(waited.stdout, /BRIEF: literal analysis/);
+      } else assert.match(result.stdout, /BRIEF: literal analysis/);
+      const captured = JSON.parse(fs.readFileSync(behaviour, "utf8"));
+      assert.equal(captured.task, task);
+      assert.ok(captured.args.includes("--task-file"));
+      assert.ok(!captured.args.includes(task));
+      assert.equal(fs.readFileSync(taskFile, "utf8"), task);
+    });
+  }
+}
 
 test("detached analyze preserves the full brief in a LANE REPORT", () => {
   fs.writeFileSync(behaviour, JSON.stringify({ say: "BRIEF: stub analysis" }));

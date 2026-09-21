@@ -4,7 +4,7 @@
 #   --analyze <task>     read-only by contract: produces a BRIEF + six-part SPEC DRAFT (templates/analysis-prompt.md)
 #   --review [--base B]  read-only by contract: cross-vendor review of uncommitted changes (or of BASE...HEAD)
 #   (read-only modes run at the user's access level — codex's read-only sandbox cannot run commands on
-#    Windows — and every write the model makes is reverted and reported as STRAY WRITES.)
+#    Windows — and writes outside .lane-scratch/ are reverted and reported as STRAY WRITES.)
 # The model is served by the OpenAI-compatible relay in ~/.claude/llm-relay.env (LLM_BASE, LLM_KEY,
 # LLM_MODEL, LLM_CODEX_ACCESS, LLM_CODEX_HOME). By default codex runs with a private
 # CODEX_HOME; shared or an explicit path loads the user's selected codex home.
@@ -14,6 +14,7 @@
 #                      [--access workspace|workspace-net|yolo] [--model <slug>] [--timeout 600] [--resume <thread-id>]
 #                      [--status-file <path>]
 #   bash codex-lane.sh --analyze "<one-line task>" [--effort medium] [--out brief.md]
+#   bash codex-lane.sh --analyze --task-file <task.md> [--out .lane-scratch/brief.md]
 #   bash codex-lane.sh --review [--base main] [--spec goal.md] [--effort medium] [--out review.md]
 #
 # Prints the model's final message, then:
@@ -81,12 +82,17 @@ resolve_codex_home() {
   export CODEX_HOME="$selected"
 }
 
-MODE=implement; SPEC=""; TASK=""; BASE=""; OUT=""; STATUS_FILE=""
+MODE=implement; SPEC=""; TASK=""; TASK_FILE=""; BASE=""; OUT=""; STATUS_FILE=""
 MODEL="${LLM_MODEL:-$(codex_config_model)}"; EFFORT=""; TIMEOUT=600; ACCESS="$LLM_CODEX_ACCESS"; FILES=""; RESUME=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --spec) SPEC="$2"; shift 2 ;;
-    --analyze) MODE=analyze; TASK="$2"; shift 2 ;;
+    --analyze) MODE=analyze; shift; if [ $# -gt 0 ] && [[ "$1" != --* ]]; then TASK="$1"; shift; fi ;;
+    --task|--task-file)
+      [ $# -ge 2 ] && [[ "$2" != --* ]] || { echo "codex-lane: $1 requires a value" >&2; exit 1; }
+      MODE=analyze
+      if [ "$1" = --task-file ]; then TASK_FILE="$2"; else TASK="$2"; fi
+      shift 2 ;;
     --review) MODE=review; shift ;;
     --base) BASE="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
@@ -101,11 +107,17 @@ while [ $# -gt 0 ]; do
   esac
 done
 if [ "$MODE" = implement ]; then [ -n "$SPEC" ] && [ -f "$SPEC" ] || { echo "codex-lane: --spec <file> required" >&2; exit 1; }; fi
-if [ "$MODE" = analyze ]; then [ -n "$TASK" ] || { echo "codex-lane: --analyze \"<task>\" required" >&2; exit 1; }; fi
+if [ "$MODE" = analyze ]; then
+  if [ -n "$TASK_FILE" ]; then
+    [ -f "$TASK_FILE" ] && [ -r "$TASK_FILE" ] && [ -s "$TASK_FILE" ] || { echo "codex-lane: --task-file must be a readable nonempty file" >&2; exit 1; }
+  else
+    [ -n "$TASK" ] || { echo "codex-lane: --analyze \"<task>\" or --task-file <path> required" >&2; exit 1; }
+  fi
+fi
 case "$ACCESS" in workspace|workspace-net|yolo) ;; *) echo "codex-lane: --access must be workspace|workspace-net|yolo (got '$ACCESS')" >&2; exit 1 ;; esac
 if ! [[ "$LLM_LANE_MAX_INPUT_TOKENS" =~ ^[1-9][0-9]*$ ]]; then echo "codex-lane: LLM_LANE_MAX_INPUT_TOKENS must be a positive integer" >&2; exit 1; fi
 # analyze/review are read-only by contract, not by sandbox: codex's read-only sandbox blocks every shell
-# command on Windows, so they run at the user's access level and any write is reverted afterwards.
+# command on Windows, so writes outside .lane-scratch/ are reverted afterwards.
 READONLY_MODE=0; [ "$MODE" != implement ] && READONLY_MODE=1
 
 STATUS_EVENTS_FILE=""
@@ -217,13 +229,17 @@ PREAMBLE
       cp "$SPEC" "$PROMPT"
     fi ;;
   analyze)
-    TASK_ESC=$(printf '%s' "$TASK" | sed 's/[&|\\]/\\&/g')
-    sed "s|{{TASK}}|$TASK_ESC|" "$PLUGIN/templates/analysis-prompt.md" > "$PROMPT"
-    printf '\nWORKING ROOT: %s — read-only by contract: you may run read-only commands (tests, git, grep); any file you write will be reverted.\n' "$ROOT" >> "$PROMPT" ;;
+    TASK_TEXT="$TASK" node -e '
+const fs=require("fs");
+const [template,file]=process.argv.slice(1);
+const task=file?fs.readFileSync(file,"utf8"):process.env.TASK_TEXT;
+process.stdout.write(fs.readFileSync(template,"utf8").replace("{{TASK}}",()=>task));
+' "$PLUGIN/templates/analysis-prompt.md" "$TASK_FILE" > "$PROMPT" || exit 1
+    printf '\nWORKING ROOT: %s — read-only by contract: you may run read-only commands (tests, git, grep); only .lane-scratch/ may be written. Other writes will be reverted.\n' "$ROOT" >> "$PROMPT" ;;
   review)
     if [ -n "$BASE" ]; then DIFFCMD="git diff $BASE...HEAD"; else DIFFCMD="git diff HEAD (plus git status --porcelain for untracked files; read them too)"; fi
     cat > "$PROMPT" <<REVIEW
-You are a strict senior engineer doing a cross-vendor code review. You have READ-ONLY access.
+You are a strict senior engineer doing a cross-vendor code review. You have READ-ONLY access except for output artifacts under .lane-scratch/.
 First run: $DIFFCMD
 Then report, in under 300 words:
 1. Correctness bugs (with file:line and a one-line fix).
@@ -244,6 +260,9 @@ esac
 have_git=0; linked=0; MAIN_ROOT=""; MAIN_BEFORE=""
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   have_git=1
+  EXCLUDE=$(git rev-parse --git-path info/exclude)
+  mkdir -p "$(dirname "$EXCLUDE")"
+  grep -qxF '/.lane-scratch/' "$EXCLUDE" 2>/dev/null || printf '\n/.lane-scratch/\n' >> "$EXCLUDE"
   snapshot() { { git diff HEAD --no-color; git ls-files --others --exclude-standard -z | xargs -0 -r sha1sum; } 2>/dev/null | sha1sum | cut -d' ' -f1; }
   changed_paths() { { git diff HEAD --name-only; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u; }
   BEFORE=$(snapshot)
@@ -415,10 +434,14 @@ if [ "$READONLY_MODE" -eq 1 ]; then
   if [ "$have_git" -eq 1 ]; then
     AFTER=$(snapshot)
     if [ "$BEFORE" != "$AFTER" ]; then
-      STRAYP=$(comm -13 <(printf '%s\n' "$BEFORE_PATHS") <(changed_paths) | sed '/^$/d')
-      echo "STRAY WRITES IN READ-ONLY MODE (reverted): $(printf '%s' "$STRAYP" | tr '\n' ' ')"
-      # shellcheck disable=SC2086
-      [ -n "$STRAYP" ] && { git checkout -q -- $STRAYP 2>/dev/null; git clean -fq -- $STRAYP 2>/dev/null; }
+      STRAYP=$(comm -13 <(printf '%s\n' "$BEFORE_PATHS") <(changed_paths) | sed '/^$/d; /^\.lane-scratch\//d')
+      if [ -n "$STRAYP" ]; then
+        echo "STRAY WRITES IN READ-ONLY MODE (reverted): $(printf '%s' "$STRAYP" | tr '\n' ' ')"
+        while IFS= read -r stray_path; do
+          git checkout -q -- "$stray_path" 2>/dev/null
+          git clean -fq -- "$stray_path" 2>/dev/null
+        done <<< "$STRAYP"
+      fi
     fi
   fi
   if [ ! -s "$FINAL" ]; then echo "STATUS: refused"; echo "REASON: model returned no message"; status_write "done refused" 3; log_usage refused "$TOK_IN" "$TOK_CACHED" "$TOK_OUT" "$SESSION"; exit 3; fi

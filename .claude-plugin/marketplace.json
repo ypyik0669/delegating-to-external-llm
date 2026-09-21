@@ -11,7 +11,7 @@
     {
       "name": "delegating-to-external-llm",
       "source": "./",
-      "version": "2.8.1",
+      "version": "2.8.2",
       "description": "Claude is only the brain: every implementation task is routed to the relay model (follows your codex config) with a per-task reasoning effort, verified by re-running tests, and reviewed by llm-advisor before it ships."
     }
   ]

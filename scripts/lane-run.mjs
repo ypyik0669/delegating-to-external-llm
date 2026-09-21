@@ -7,6 +7,7 @@
 //   node lane-run.mjs --spec <spec.md> [--max-resumes 2] [--timeout 900] [--json]
 //   node lane-run.mjs --batch a.md b.md c.md [--concurrency 2] [--status-dir <dir>]
 //   node lane-run.mjs --analyze "<task>" [--cwd <repo>] [--effort medium] [--out brief.md]
+//   node lane-run.mjs --analyze --task-file <task.md> [--detach] [--out .lane-scratch/brief.md]
 //   node lane-run.mjs --detach --spec <spec.md> [--status-dir <dir>]
 //   node lane-run.mjs --wait <slug...> [--timeout 540] [--status-dir <dir>]
 //
@@ -61,7 +62,11 @@ for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === "--spec") opt.spec = args[++i];
   else if (a === "--batch") { while (args[i + 1] && !args[i + 1].startsWith("--")) opt.batch.push(args[++i]); }
-  else if (a === "--analyze") opt.analyze = args[++i];
+  else if (a === "--analyze") opt.analyze = args[i + 1] && !args[i + 1].startsWith("--") ? args[++i] : "";
+  else if (a === "--task-file") {
+    if (!args[i + 1] || args[i + 1].startsWith("--")) { console.error("lane-run: --task-file requires a path"); process.exit(1); }
+    opt.taskFile = path.resolve(args[++i]);
+  }
   else if (a === "--cwd") opt.cwd = args[++i];
   else if (a === "--effort") opt.effort = args[++i];
   else if (a === "--out") opt.out = args[++i];
@@ -77,7 +82,14 @@ for (let i = 0; i < args.length; i++) {
   else if (a === "-h" || a === "--help") { console.log(fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 13).map((l) => l.replace(/^\/\/ ?/, "")).join("\n")); process.exit(0); }
 }
 
+if (opt.taskFile) {
+  try { opt.analyze = fs.readFileSync(opt.taskFile, "utf8"); }
+  catch (error) { console.error(`lane-run: --task-file: ${error.message}`); process.exit(1); }
+}
+if ((args.includes("--analyze") || opt.taskFile) && !opt.analyze) { console.error("lane-run: analysis requires a nonempty task or --task-file"); process.exit(1); }
+
 const winPath = (p) => (process.platform === "win32" ? p.replace(/\\/g, "/") : p);
+const shellQuote = (value) => `'${String(value).replace(/'/g, "'\\''")}'`;
 const statusDir = path.resolve(opt.statusDir || process.env.LANE_STATUS_DIR || (process.env.CLAUDE_SCRATCHPAD_DIR ? path.join(process.env.CLAUDE_SCRATCHPAD_DIR, "lanes") : path.join(os.homedir(), ".claude", "lane-status")));
 const statusScript = path.resolve(HERE, "lane-status.mjs");
 const watchLine = `WATCH: node "${statusScript}" --watch --dir "${statusDir}"`;
@@ -177,6 +189,11 @@ if (args.includes("--wait")) {
 }
 
 const analyzeSlug = opt.analyze ? process.env.LANE_RUN_ANALYZE_SLUG || (opt.out ? slugFor(opt.out) : `analyze-${Date.now()}-${process.pid}`) : null;
+if (opt.analyze && !opt.taskFile) {
+  fs.mkdirSync(statusDir, { recursive: true });
+  opt.taskFile = path.join(statusDir, `${analyzeSlug}.task.md`);
+  fs.writeFileSync(opt.taskFile, opt.analyze, "utf8");
+}
 if (!opt.detach && process.env.LANE_RUN_LOG_FILE) {
   for (const slug of opt.analyze ? [analyzeSlug] : slugs) writeStatus(path.join(statusDir, `${slug}.status.json`), { pid: process.pid });
 }
@@ -190,7 +207,7 @@ if (opt.detach) {
     fs.rmSync(reportFileFor(slug), { force: true });
     writeStatus(path.join(statusDir, `${slug}.status.json`), { slug, mode: opt.analyze ? "analyze" : "implement", spec: opt.analyze || specs[index], phase: "queued", log_file: logFile, pid: null }, true);
   }
-  const childArgs = opt.analyze ? ["--analyze", opt.analyze] : opt.batch.length ? ["--batch", ...specs] : ["--spec", specs[0]];
+  const childArgs = opt.analyze ? ["--analyze", "--task-file", opt.taskFile] : opt.batch.length ? ["--batch", ...specs] : ["--spec", specs[0]];
   childArgs.push("--status-dir", statusDir, "--no-watch", "--timeout", String(opt.timeout), "--max-resumes", String(opt.maxResumes), "--lockfile-max-lines", String(opt.lockMax), "--concurrency", String(opt.concurrency));
   if (opt.cwd) childArgs.push("--cwd", opt.cwd);
   if (opt.effort) childArgs.push("--effort", opt.effort);
@@ -250,7 +267,7 @@ if (opt.analyze) {
   const analyzeStatus = path.join(statusDir, `${analyzeSlug}.status.json`);
   fs.rmSync(reportFileFor(analyzeSlug), { force: true });
   writeStatus(analyzeStatus, { slug: analyzeSlug, mode: "analyze", spec: opt.analyze, phase: "running", last_message: opt.analyze }, true);
-  const cmd = `bash "${winPath(LANE_SH)}" --analyze ${JSON.stringify(opt.analyze)}${opt.effort ? ` --effort ${opt.effort}` : ""} --timeout ${opt.timeout} --status-file "${winPath(analyzeStatus)}"${opt.out ? ` --out "${winPath(opt.out)}"` : ""}`;
+  const cmd = `bash ${shellQuote(winPath(LANE_SH))} --analyze --task-file ${shellQuote(winPath(opt.taskFile))}${opt.effort ? ` --effort ${shellQuote(opt.effort)}` : ""} --timeout ${opt.timeout} --status-file ${shellQuote(winPath(analyzeStatus))}${opt.out ? ` --out ${shellQuote(winPath(opt.out))}` : ""}`;
   const r = run(cmd, cwd, opt.timeout + 60);
   updateFromOutput(analyzeStatus, r.out);
   const status = laneField(r.out, "STATUS") || (r.status === 0 ? "ran" : "failed");
