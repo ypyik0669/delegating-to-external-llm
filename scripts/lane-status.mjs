@@ -17,7 +17,7 @@ const clean = (value, width = 200) => String(value ?? "").replace(/\x1b\[[0-?]*[
 const elapsed = (status, now) => {
   const started = Date.parse(status.started_at || "");
   const seconds = String(status.phase || "").startsWith("done ") || !Number.isFinite(started) ? Number(status.elapsed_s || 0) : Math.max(0, (now - started) / 1000);
-  return `${Math.round(seconds * 10) / 10}s`;
+  return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${String(Math.floor(seconds % 60)).padStart(2, "0")}s` : `${Math.round(seconds * 10) / 10}s`;
 };
 
 export function renderTable(statuses, now = Date.now()) {

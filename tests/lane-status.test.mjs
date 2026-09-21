@@ -31,7 +31,7 @@ function streamingFixture() {
     'console.log(JSON.stringify({type:"turn.completed",usage:{input_tokens:17,cached_input_tokens:4,output_tokens:9}},null,0).replaceAll(":",": "));',
     '},20);',
   ].join("\n"));
-  const env = { ...process.env, HOME: home.replace(/\\/g, "/"), USERPROFILE: home, CODEX_HOME: "", LANE_CODEX_HOME: home.replace(/\\/g, "/"), LLM_MODEL: "stub", LLM_BASE: "https://unused.invalid", LLM_KEY: "test", LLM_CODEX_ACCESS: "workspace", EVAL_CODEX_DISABLED: "", LLM_USAGE_LOG: path.join(root, "usage.jsonl"), TMPDIR: root.replace(/\\/g, "/"), TMP: root, TEMP: root, GIT_CEILING_DIRECTORIES: root.replace(/\\/g, "/"), STUB_EVENTS: events.replace(/\\/g, "/"), STUB_GATE: gate };
+  const env = { ...process.env, HOME: home.replace(/\\/g, "/"), USERPROFILE: home, CODEX_HOME: "", LANE_CODEX_HOME: home.replace(/\\/g, "/"), LLM_MODEL: "stub", LLM_BASE: "https://unused.invalid", LLM_KEY: "test", LLM_CODEX_ACCESS: "workspace", LLM_LANE_MAX_INPUT_TOKENS: "3000000", LANE_STATUS_DIR: path.dirname(statusFile), EVAL_CODEX_DISABLED: "", LLM_USAGE_LOG: path.join(root, "usage.jsonl"), TMPDIR: root.replace(/\\/g, "/"), TMP: root, TEMP: root, GIT_CEILING_DIRECTORIES: root.replace(/\\/g, "/"), STUB_EVENTS: events.replace(/\\/g, "/"), STUB_GATE: gate };
   const inheritedPath = Object.entries(env).find(([key]) => key.toUpperCase() === "PATH")?.[1] || "";
   for (const key of Object.keys(env)) if (key.toUpperCase() === "PATH") delete env[key];
   env.PATH = bin + path.delimiter + inheritedPath;
@@ -94,6 +94,87 @@ test("codex status write failures are reported without failing the lane", { time
   }
 });
 
+for (const eventMode of ["turn.completed", "token_count", "mixed"]) {
+  test(`token guard stops cumulative ${eventMode} usage while codex is still running`, { timeout: 60000 }, () => {
+    const fixture = streamingFixture();
+    try {
+      fixture.env.LLM_LANE_MAX_INPUT_TOKENS = "100";
+      const events = eventMode === "turn.completed" ? [
+        { type: "turn.completed", usage: { input_tokens: 60, output_tokens: 2 } },
+        { type: "turn.completed", usage: { input_tokens: 60, output_tokens: 2 } },
+      ] : [
+        { type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { input_tokens: 60 } } } },
+        ...(eventMode === "mixed" ? [{ type: "turn.completed", usage: { input_tokens: 60 } }] : []),
+        { type: "token_count", info: { total_token_usage: { input_tokens: 120 } } },
+      ];
+      fs.writeFileSync(fixture.env.STUB_EVENTS, `const events=${JSON.stringify(events)}; let index=0; setInterval(()=>{if(index<events.length) console.log(JSON.stringify(events[index++]));},150);`);
+      const started = Date.now();
+      const result = spawnSync("bash", [path.join(project, "scripts", "codex-lane.sh").replace(/\\/g, "/"), "--spec", fixture.spec.replace(/\\/g, "/"), "--status-file", fixture.statusFile.replace(/\\/g, "/"), "--timeout", "15"], { cwd: fixture.cwd, env: fixture.env, encoding: "utf8", timeout: 45000 });
+      assert.equal(result.status, 4, result.stdout + result.stderr);
+      assert.match(result.stdout, /STATUS: timeout/);
+      assert.match(result.stdout, /REASON: token budget exceeded \(120 > 100\)/);
+      assert.match(result.stdout, /TOKENS: in=120 /);
+      const status = JSON.parse(fs.readFileSync(fixture.statusFile, "utf8"));
+      assert.equal(status.phase, "done timeout");
+      assert.equal(status.last_message, "token budget exceeded (120 > 100)");
+      assert.ok(Date.now() - started < 10000, result.stdout + result.stderr);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("token guard loads the env-only key and works without a status file", { timeout: 60000 }, () => {
+  const fixture = streamingFixture();
+  try {
+    delete fixture.env.LLM_LANE_MAX_INPUT_TOKENS;
+    fs.mkdirSync(path.join(fixture.env.HOME, ".claude"));
+    fs.writeFileSync(path.join(fixture.env.HOME, ".claude", "llm-relay.env"), "LLM_LANE_MAX_INPUT_TOKENS=10\n");
+    fs.writeFileSync(fixture.env.STUB_EVENTS, 'console.log(JSON.stringify({type:"turn.completed",usage:{input_tokens:11}}));setInterval(()=>{},1000);');
+    const result = spawnSync("bash", [path.join(project, "scripts", "codex-lane.sh").replace(/\\/g, "/"), "--spec", fixture.spec.replace(/\\/g, "/"), "--timeout", "15"], { cwd: fixture.cwd, env: fixture.env, encoding: "utf8", timeout: 45000 });
+    assert.equal(result.status, 4, result.stdout + result.stderr);
+    assert.match(result.stdout, /REASON: token budget exceeded \(11 > 10\)/);
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("usage at the limit completes, without double-counting token_count and turn.completed", { timeout: 60000 }, () => {
+  const fixture = streamingFixture();
+  try {
+    fixture.env.LLM_LANE_MAX_INPUT_TOKENS = "100";
+    fs.writeFileSync(fixture.env.STUB_EVENTS, [
+      'console.log(JSON.stringify({type:"token_count",info:{total_token_usage:{input_tokens:100,cached_input_tokens:20,output_tokens:5}}}));',
+      'console.log(JSON.stringify({type:"turn.completed",usage:{input_tokens:100,cached_input_tokens:20,output_tokens:5}}));',
+    ].join("\n"));
+    fs.mkdirSync(path.dirname(fixture.statusFile));
+    fs.writeFileSync(fixture.statusFile, JSON.stringify({ phase: "running", report_file: "driver.report.txt", log_file: "driver.log", pid: 123, exit: null }));
+    const result = spawnSync("bash", [path.join(project, "scripts", "codex-lane.sh").replace(/\\/g, "/"), "--spec", fixture.spec.replace(/\\/g, "/"), "--status-file", fixture.statusFile.replace(/\\/g, "/")], { cwd: fixture.cwd, env: fixture.env, encoding: "utf8", timeout: 45000 });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /TOKENS: in=100 cached=20 out=5/);
+    const status = JSON.parse(fs.readFileSync(fixture.statusFile, "utf8"));
+    assert.equal(status.report_file, "driver.report.txt");
+    assert.equal(status.log_file, "driver.log");
+    assert.equal(status.pid, 123);
+    assert.equal(status.phase, "running");
+    assert.equal(status.exit, null);
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("wall-clock timeout still stops a lane with no usage events", { timeout: 60000 }, () => {
+  const fixture = streamingFixture();
+  try {
+    fs.writeFileSync(fixture.env.STUB_EVENTS, "setInterval(()=>{},1000);");
+    const result = spawnSync("bash", [path.join(project, "scripts", "codex-lane.sh").replace(/\\/g, "/"), "--spec", fixture.spec.replace(/\\/g, "/"), "--timeout", "1"], { cwd: fixture.cwd, env: fixture.env, encoding: "utf8", timeout: 15000 });
+    assert.equal(result.status, 4, result.stdout + result.stderr);
+    assert.match(result.stdout, /REASON: wall clock of 1s exceeded/);
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("status CLI runs on Windows, handles missing directories, and sorts JSON", () => {
   const root = fs.mkdtempSync(path.join(project, "tests", ".status-cli-"));
   try {
@@ -108,7 +189,7 @@ test("status CLI runs on Windows, handles missing directories, and sorts JSON", 
     const result = spawnSync(process.execPath, [watcher, "--dir", root, "--json"], { encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout).map((status) => status.slug), ["newer", "older"]);
-    const invalid = spawnSync(process.execPath, [watcher, "--dir"], { encoding: "utf8" });
+    const invalid = spawnSync(process.execPath, [watcher, "--dir"], { encoding: "utf8", env: { ...process.env, LANE_STATUS_DIR: root } });
     assert.equal(invalid.status, 0, invalid.stderr);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -126,6 +207,12 @@ test("renderTable sorts by updated_at and excludes stale lanes", () => {
   assert.match(table, /running \| running/);
   assert.doesNotMatch(table, /stale/);
   assert.ok(table.indexOf("done |") < table.indexOf("running |"));
+});
+
+test("ELAPSED uses minutes and zero-padded seconds after a minute", () => {
+  const now = Date.now();
+  const table = renderTable([{ slug: "elapsed", phase: "done complete", elapsed_s: 725, updated_at: new Date(now).toISOString() }], now);
+  assert.match(table, /elapsed \| done complete \| 12m 05s \|/);
 });
 
 test("lane-run writes a completed status file", () => {

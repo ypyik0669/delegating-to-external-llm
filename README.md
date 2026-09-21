@@ -85,7 +85,11 @@ Then open Claude Code in any repo and describe a task the way you always did. No
 
 ### Watching progress
 
-Every background launch must be reported with the exact `WATCH:` line printed by `lane-run.mjs`; run the command after that prefix in your terminal to see progress. It runs `lane-status.mjs --watch` with `--dir` pointing to that launch's status directory and refreshes every two seconds. Use `/delegating-to-external-llm:status` in Claude Code for a single verbatim table of phase, elapsed time, tokens and last message (with the same status-directory environment).
+By default, Claude launches one `codex-implementer` subagent per lane in the same message, up to the concurrency cap (2). Claude Code shows each subagent's entry: first its `SLUG:` and `WATCH:` lines, then verbatim `RUNNING` lines after each wait slice, and finally the unchanged LANE REPORT. The thin wrapper starts `lane-run.mjs --detach`, then repeats `--wait <slug> --timeout 540`; it never reads source, fixes code or polls with `sleep`. `codex-analyst` uses the same detached flow for analysis. Only explicit `--batch` runs may use background Bash in the main session.
+
+Every dispatch reply includes the exact `WATCH:` line. Run the command after that prefix in your terminal for a two-second-refresh table of phase, elapsed time (`12m 05s`), tokens and last message. It points to the launch's status directory with `--dir`. `/delegating-to-external-llm:status` shows a single verbatim snapshot with the same status-directory environment. Detached runs save logs and reports alongside status files; wait returns reports on completion (exit 0/5/2), `RUNNING` at its deadline (10), or `MISSING` after 30 seconds without a status file (4). Reports include a `RESUME: codex resume <thread-id>` line when known.
+
+The live event monitor enforces `LLM_LANE_MAX_INPUT_TOKENS=3000000` per codex invocation, counting cached input too. Set this env-only key in `~/.claude/llm-relay.env` (or override it in the environment); setup does not prompt for it. Exceeding it kills codex and reports `STATUS: timeout` with `REASON: token budget exceeded (<n> > <limit>)`. New private homes request concise reasoning summaries for progress visibility; existing configs are preserved.
 
 ## What you actually see
 

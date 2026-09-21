@@ -38,7 +38,7 @@ exit 0
   const env = { ...process.env, HOME: slash(home), USERPROFILE: home, CODEX_HOME: "",
     LANE_CODEX_HOME: "", LLM_CODEX_HOME: "", LLM_MODEL: "", LLM_BASE: "", LLM_KEY: "",
     LLM_CODEX_ACCESS: "workspace", EVAL_CODEX_DISABLED: "", LLM_USAGE_LOG: path.join(home, "usage.jsonl"),
-    TMPDIR: slash(home), TMP: home, TEMP: home, GIT_CEILING_DIRECTORIES: slash(home) };
+    TMPDIR: slash(home), TMP: home, TEMP: home, GIT_CEILING_DIRECTORIES: slash(home), LANE_STATUS_DIR: path.join(home, "status"), LLM_LANE_MAX_INPUT_TOKENS: "3000000" };
   // Windows environment keys are case-insensitive; avoid inherited Path overriding PATH.
   const inheritedPath = Object.entries(env).find(([k]) => k.toUpperCase() === "PATH")?.[1] || "";
   for (const key of Object.keys(env)) if (key.toUpperCase() === "PATH") delete env[key];
@@ -69,6 +69,7 @@ test("default private home is created and seeded byte-for-byte", () => {
   const target = path.join(f.home, ".claude", "llm-codex-home");
   ran(f, target, "private");
   assert.deepEqual(fs.readFileSync(path.join(target, "config.toml")), fs.readFileSync(path.join(root, "codex-home/config.toml")));
+  assert.match(fs.readFileSync(path.join(target, "config.toml"), "utf8"), /^model_reasoning_summary = "concise"$/m);
 });
 
 test("private home retains existing config and follows the user's original model", () => {

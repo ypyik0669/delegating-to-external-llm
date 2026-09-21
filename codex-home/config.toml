@@ -9,7 +9,7 @@
 
 disable_response_storage = true
 model_verbosity = "low"
-model_reasoning_summary = "none"
+model_reasoning_summary = "concise"
 web_search = "disabled"
 project_doc_max_bytes = 0
 

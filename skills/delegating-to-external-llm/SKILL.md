@@ -28,16 +28,16 @@ Every background notification re-enters your whole context. Delegation is cheap 
 
 1. Start delegation in a fresh session, or run `/compact` before the first lane. Do not delegate from a session that just did hours of unrelated work.
 2. `/effort low` for orchestration turns; raise it only for a spec you find hard to approve or a verdict that deserves it.
-3. Prefer **one** `lane-run.mjs --batch` call over several agents, and run it with the Bash tool's `run_in_background: true`: the harness wakes you exactly once when it finishes. **Never poll with `sleep`** — every poll is a full-context turn; a 40-minute lane polled every 9 minutes cost 2.4M cached tokens in testing.
+3. Default dispatch is **one `codex-implementer` subagent per lane**, launched in the **same message**, up to the concurrency cap (2 by default). Each thin wrapper detaches its driver and waits in at most nine-minute slices. The main session never uses `run_in_background` for lanes **except `--batch`**, the optional single-notification alternative. **Never poll with `sleep`**; sliced waits belong inside the small subagent context, not the main session.
 4. Never paste diffs, briefs, or reports back into the conversation. Cite paths and counts.
-5. Report every background lane launch to the user together with the exact `WATCH:` line that `lane-run.mjs` prints. There is no other way for the user to see progress while it runs; never silently launch it or poll on their behalf.
+5. Every dispatch reply to the user includes the exact `WATCH:` line that `lane-run.mjs` prints. Claude Code shows a subagent entry per lane, its first `SLUG:`/`WATCH:` progress message, and verbatim `RUNNING` lines after each wait slice. The terminal watcher gives faster, two-second updates of phase, elapsed time, tokens and last message. Never silently launch lanes.
 
 ## The workflow
 
 ```
 task ──► analyze lane (external, read-only by contract) ──► BRIEF + SPEC DRAFT
       ──► you: decide open questions, edit the draft, split by domain, save spec files (≈ 2k tokens)
-      ──► lane-run.mjs --batch specs…  (external implements; script lints, verifies, resumes, reports)
+      ──► codex-implementer per lane (same message, capped; detach → wait → report)
       ──► you: read LANE REPORTs, send corrected specs or accept
       ──► llm-advisor (codex review first, Claude verdict second)
       ──► report to user with the ledger line
@@ -46,10 +46,11 @@ task ──► analyze lane (external, read-only by contract) ──► BRIEF + 
 ### 1. Analyze — the external model reads the code, not you
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/lane-run.mjs" --analyze "<one-line task>" --effort medium --timeout 600 --out "<scratch>/brief.md"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/lane-run.mjs" --detach --analyze "<one-line task>" --effort medium --timeout 600 --out "<scratch>/<unique-lane>-brief.md"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/lane-run.mjs" --wait <returned-slug> --timeout 540 --status-dir "<returned-status-directory>"
 ```
 
-(`/delegating-to-external-llm:analyze <task>` does the same; the `codex-analyst` agent wraps it when you want isolation.) It returns a ≤30-line BRIEF (files, tests, hotspots, open decisions) and a six-part SPEC DRAFT. You answer the open decisions, edit the draft, and save it. Open a file the brief cites only when a decision genuinely depends on the exact code — and then read the cited line range, not the file.
+Dispatch a `codex-analyst` subagent to perform this detach/wait loop, not a background Bash call in the main session. It returns a LANE REPORT containing the full ≤30-line BRIEF (files, tests, hotspots, open decisions) and six-part SPEC DRAFT. You answer the open decisions, edit the draft, and save it. Open a file the brief cites only when a decision genuinely depends on the exact code — and then read the cited line range, not the file.
 
 ### 2. Spec — the only artefact you author
 
@@ -60,17 +61,21 @@ Lanes share none of your context. Every spec carries the six parts (template: `t
 ### 3. Implement — deterministic driver, no LLM supervisor
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/lane-run.mjs" --spec spec.md --max-resumes 2 --timeout 900
-node "${CLAUDE_PLUGIN_ROOT}/scripts/lane-run.mjs" --batch a.md b.md c.md      # parallel, one wake-up
+node "${CLAUDE_PLUGIN_ROOT}/scripts/lane-run.mjs" --detach --spec spec.md --max-resumes 2 --timeout 900
+node "${CLAUDE_PLUGIN_ROOT}/scripts/lane-run.mjs" --wait <returned-slug> --timeout 540 --status-dir "<returned-status-directory>"
 ```
 
-Lanes take 10–40 minutes. Launch the call with `run_in_background: true` (Bash timeout 3600000) and do nothing until the completion notification arrives; the analyze lane is the same. No `sleep` loops, no polling of log files.
+Launch one `codex-implementer` subagent per spec in the same message, up to the cap. The wrapper starts detached, emits `SLUG:` and `WATCH:` as its first progress message, then calls `--wait` with Bash timeout 600000 ms. Exit 10 means it emits the `RUNNING` line unchanged and waits again; 0/5/2 means it returns the stored LANE REPORT verbatim; 4 means `MISSING` and stops. No summaries, `sleep`, source reads, log polling, direct codex calls or repairs in either wrapper.
+
+For an explicit batch, `lane-run.mjs --batch a.md b.md --concurrency 2` may use `run_in_background: true` (Bash timeout 3600000); this is the only main-session background exception. Alternatively `--detach --batch` launches one independent batch process and prints every slug for `--wait <slug…>`. Duplicate spec basenames are rejected before any lane starts. Always relay the `WATCH:` line.
 
 The driver lints the spec, runs `codex-lane.sh` (relay model via codex, selectable `CODEX_HOME`, permission level from `LLM_CODEX_ACCESS`, edits fenced to FILES, stray writes to the main tree moved back into the worktree), re-runs every VERIFICATION command itself, resumes the same codex session with the failing output up to `--max-resumes` times, checks lockfile churn, and prints a LANE REPORT. Exit 0 = `complete`, 5 = `partial`, 2 = `refused`/`unavailable`.
 
 **Private vs shared codex home.** Set `LLM_CODEX_HOME` in `~/.claude/llm-relay.env`: `private` (default) uses `~/.claude/llm-codex-home`, seeded from `codex-home/config.toml`; `shared` uses `${CODEX_HOME:-$HOME/.codex}` and loads your Codex CLI/App plugins, MCP servers, skills, AGENTS.md and trust entries. Measured base input per run was **42k private vs 122k shared (~3x)**. You can also select an existing directory path (including `~/…`); shared/path mode never creates the home or copies the template config. A missing home reports `codex home not found: <path>` and `STATUS: unavailable`, exit 3. Precedence: `LANE_CODEX_HOME` environment override → `LLM_CODEX_HOME` environment → env file → `private`. The banner and usage ledger record the selected home; model fallback still reads your original codex config before switching homes.
 
-Call it from Bash directly. Use the `codex-implementer` agent only to keep a very long report out of your context; it adds nothing else.
+The subagent is a visibility wrapper, not an LLM supervisor: the deterministic driver still owns all verification and resumes. Detached runs write `<slug>.log`, `<slug>.status.json` (including PID and artifact paths), and `<slug>.report.txt`. Wait output includes session IDs; completed reports include `RESUME: codex resume <thread-id>` when known. Run the command after `WATCH:` in a terminal for the live table, or use `/delegating-to-external-llm:status` for a snapshot with the same status directory.
+
+`LLM_LANE_MAX_INPUT_TOKENS` in the relay env file caps cumulative prompt tokens per codex invocation (default **3000000**, including cached input). The live event monitor kills codex if the limit is exceeded and reports `STATUS: timeout` with `REASON: token budget exceeded (<n> > <limit>)`. This key is env-only; setup does not prompt for it. Private home's template requests concise reasoning summaries so progress is visible there too; existing configs are not overwritten.
 
 Fallback: `relay-implementer` (chat completions applied verbatim, optional four-phase trail) when codex is `unavailable` or a task has failed twice.
 
@@ -82,7 +87,7 @@ Decompose by domain, not by verb. File sets must be disjoint; **hotspot files** 
 
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/lane-worktree.sh" create <slug>    # prints the path → WORKTREE: in the spec
-node  "${CLAUDE_PLUGIN_ROOT}/scripts/lane-run.mjs" --batch <specs…>
+# Dispatch one codex-implementer per spec in the same message (up to the cap).
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/lane-worktree.sh" merge <slug>     # commits the lane's work, dry-run-checks, merges --no-commit
 ```
 

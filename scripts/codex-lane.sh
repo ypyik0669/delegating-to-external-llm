@@ -39,10 +39,11 @@ if [ -f "$ENVF" ]; then
   while IFS='=' read -r k v; do
     case "$k" in ''|\#*) continue ;; esac
     k=$(printf '%s' "$k" | tr -d '[:space:]'); v=$(printf '%s' "$v" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    case "$k" in LLM_BASE|LLM_KEY|LLM_MODEL|LLM_CODEX_ACCESS|LLM_CODEX_HOME) [ -z "${!k:-}" ] && eval "$k=\"\$v\"" ;; esac
+    case "$k" in LLM_BASE|LLM_KEY|LLM_MODEL|LLM_CODEX_ACCESS|LLM_CODEX_HOME|LLM_LANE_MAX_INPUT_TOKENS) [ -z "${!k:-}" ] && eval "$k=\"\$v\"" ;; esac
   done < "$ENVF"
 fi
 LLM_BASE="${LLM_BASE:-${EVAL_LLM_BASE:-}}"; LLM_KEY="${LLM_KEY:-${EVAL_LLM_KEY:-}}"; LLM_CODEX_ACCESS="${LLM_CODEX_ACCESS:-${EVAL_LLM_CODEX_ACCESS:-workspace}}"
+LLM_LANE_MAX_INPUT_TOKENS="${LLM_LANE_MAX_INPUT_TOKENS:-3000000}"
 
 # Read the user's config before switching to the lane's selected CODEX_HOME.
 codex_config_model() {
@@ -102,6 +103,7 @@ done
 if [ "$MODE" = implement ]; then [ -n "$SPEC" ] && [ -f "$SPEC" ] || { echo "codex-lane: --spec <file> required" >&2; exit 1; }; fi
 if [ "$MODE" = analyze ]; then [ -n "$TASK" ] || { echo "codex-lane: --analyze \"<task>\" required" >&2; exit 1; }; fi
 case "$ACCESS" in workspace|workspace-net|yolo) ;; *) echo "codex-lane: --access must be workspace|workspace-net|yolo (got '$ACCESS')" >&2; exit 1 ;; esac
+if ! [[ "$LLM_LANE_MAX_INPUT_TOKENS" =~ ^[1-9][0-9]*$ ]]; then echo "codex-lane: LLM_LANE_MAX_INPUT_TOKENS must be a positive integer" >&2; exit 1; fi
 # analyze/review are read-only by contract, not by sandbox: codex's read-only sandbox blocks every shell
 # command on Windows, so they run at the user's access level and any write is reverted afterwards.
 READONLY_MODE=0; [ "$MODE" != implement ] && READONLY_MODE=1
@@ -135,7 +137,8 @@ try {
   const now=new Date();
   const startedAt=current.started_at||started||now.toISOString();
   const elapsed=Math.max(0,(now.getTime()-Date.parse(startedAt))/1000);
-  current={slug:slug||current.slug||"",mode:mode||current.mode||"",spec:current.spec||spec||"",phase:phase||current.phase||"running",started_at:startedAt,updated_at:now.toISOString(),elapsed_s:Math.round(elapsed*10)/10,tokens:{in:Number(tin||current.tokens?.in||0),cached:Number(tcached||current.tokens?.cached||0),out:Number(tout||current.tokens?.out||0)},session:session||current.session||"unknown",last_message:(message||current.last_message||"").slice(0,200),exit:exitValue===""?(current.exit??null):Number(exitValue)};
+  const driverFinishes=current.report_file&&phase.startsWith("done ");
+  current={...current,slug:slug||current.slug||"",mode:mode||current.mode||"",spec:current.spec||spec||"",phase:driverFinishes?current.phase:(phase||current.phase||"running"),started_at:startedAt,updated_at:now.toISOString(),elapsed_s:Math.round(elapsed*10)/10,tokens:{in:Number(tin||current.tokens?.in||0),cached:Number(tcached||current.tokens?.cached||0),out:Number(tout||current.tokens?.out||0)},session:session||current.session||"unknown",last_message:(message||current.last_message||"").slice(0,200),exit:driverFinishes||exitValue===""?(current.exit??null):Number(exitValue)};
   fs.mkdirSync(path.dirname(file),{recursive:true});
   const tmp=`${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp,JSON.stringify(current)+"\n","utf8");
@@ -179,7 +182,7 @@ PROMPT=$(mktemp -t codex-spec.XXXXXX)
 FINAL=$(mktemp -t codex-final.XXXXXX)
 ERRLOG=$(mktemp -t codex-err.XXXXXX)
 EVENTS=$(mktemp -t codex-events.XXXXXX)
-trap 'rm -f "$PROMPT" "$FINAL" "$ERRLOG" "$EVENTS"' EXIT
+trap 'rm -f "$PROMPT" "$FINAL" "$ERRLOG" "$EVENTS" "$EVENTS.summary"' EXIT
 
 case "$MODE" in
   implement)
@@ -202,6 +205,7 @@ Rules for this lane:
 - Run the verification command and include its actual output in your final
   message.
 - List any judgment calls you made that the spec left open.
+- Keep a plan via your update_plan tool and refresh it as items complete.
 
 PREAMBLE
         cat "$SPEC"
@@ -260,9 +264,6 @@ case "$ACCESS" in
 esac
 
 # --- run --------------------------------------------------------------------
-T=$(command -v gtimeout || command -v timeout || true)
-[ -z "$T" ] && echo "WARN: no timeout binary; codex runs uncapped" >&2
-
 COMMON_ARGS=(
   -c model_provider=relay
   -c 'model_providers.relay.name="relay"'
@@ -281,52 +282,89 @@ set +e
 export LLM_RELAY_KEY="$LLM_KEY"
 
 capture_codex() {
-  if [ -n "$STATUS_FILE" ]; then
-    "$@" 2>"$ERRLOG" | tee -a "$EVENTS" "$STATUS_EVENTS_FILE" | node -e '
-const fs=require("fs"),path=require("path");
-const [statusFile]=process.argv.slice(1);
-let status={}; try { status=JSON.parse(fs.readFileSync(statusFile,"utf8"))||{}; } catch {}
+  node -e '
+const fs=require("fs"),path=require("path"),{spawn,spawnSync}=require("child_process");
+const [statusFile,eventsFile,publicEventsFile,errorFile,limitText,resume,timeoutText,...command]=process.argv.slice(1);
+const limit=Number(limitText);
+let status={}; if(statusFile) { try { status=JSON.parse(fs.readFileSync(statusFile,"utf8"))||{}; } catch {} }
+let session=resume||"unknown",budgetReason="",carry="",timedOut=false;
+const completed={in:0,cached:0,out:0},counted={in:0,cached:0,out:0};
+let tokens={in:0,cached:0,out:0};
+const usageTokens=(usage)=>({in:Number(usage.input_tokens||0),cached:Number(usage.cached_input_tokens||usage.cache_read_input_tokens||0),out:Number(usage.output_tokens||0)});
 const clip=(value)=>String(value||"").replace(/\s+/g," ").trim().slice(0,200);
-const atomic=()=>{ try { fs.mkdirSync(path.dirname(statusFile),{recursive:true}); const tmp=`${statusFile}.${process.pid}.tmp`; fs.writeFileSync(tmp,JSON.stringify(status)+"\n","utf8"); try { fs.renameSync(tmp,statusFile); } catch (error) { try { fs.rmSync(tmp,{force:true}); } catch {} throw error; } } catch (error) { process.stderr.write(`lane status write failed: ${error.message}\n`); } };
+const atomic=()=>{ if(!statusFile) return; try { fs.mkdirSync(path.dirname(statusFile),{recursive:true}); const tmp=`${statusFile}.${process.pid}.tmp`; fs.writeFileSync(tmp,JSON.stringify(status)+"\n","utf8"); try { fs.renameSync(tmp,statusFile); } catch (error) { try { fs.rmSync(tmp,{force:true}); } catch {} throw error; } } catch (error) { process.stderr.write(`lane status write failed: ${error.message}\n`); } };
+let publicEvents=null;
+if(publicEventsFile) { try { fs.mkdirSync(path.dirname(publicEventsFile),{recursive:true}); publicEvents=fs.openSync(publicEventsFile,"a"); } catch(error) { process.stderr.write(`lane events write failed: ${error.message}\n`); } }
+const events=fs.openSync(eventsFile,"a"),errors=fs.openSync(errorFile,"w");
+const child=spawn("bash",["-c",process.platform==="win32"?"\"$@\"; exit $?":"exec \"$@\"","lane-codex",...command],{detached:true,windowsHide:true,stdio:["inherit","pipe",errors]});
+fs.closeSync(errors);
+const stop=()=>{
+  if(process.platform==="win32") {
+    const listing=spawnSync("bash",["-c","ps -W"],{windowsHide:true,encoding:"utf8"});
+    const rows=(listing.stdout||"").trim().split(/\r?\n/).map(line=>line.trim().replace(/^I\s+/,"").split(/\s+/));
+    const group=Number(rows.find(row=>Number(row[3])===child.pid)?.[2]);
+    const ownGroup=Number(rows.find(row=>Number(row[3])===process.pid)?.[2]);
+    if(group>0&&group!==ownGroup) {
+      const killed=spawnSync("bash",["-c",`kill -KILL -- -${group}`],{windowsHide:true,encoding:"utf8"});
+      if(killed.status===0) return;
+    }
+    const killed=spawnSync("taskkill.exe",["/PID",String(child.pid),"/T","/F"],{windowsHide:true,encoding:"utf8"});
+    if(killed.status!==0) process.stderr.write(`codex stop failed: ${killed.error?.message||killed.stderr}\n`);
+  }
+  else { try { process.kill(-child.pid,"SIGKILL"); } catch {} }
+};
+const timer=Number(timeoutText)>0?setTimeout(()=>{timedOut=true;stop();},Number(timeoutText)*1000):null;
 const update=(line)=>{
   let event; try { event=JSON.parse(line); } catch { return; }
+  event=event.payload?.type==="token_count"?event.payload:event.msg?.type==="token_count"?event.msg:event;
   const now=new Date(); status.updated_at=now.toISOString(); status.elapsed_s=Math.round(Math.max(0,(now.getTime()-Date.parse(status.started_at||now.toISOString()))/1000)*10)/10;
-  if(event.thread_id) status.session=event.thread_id;
-  const usage=event.usage||event.info?.usage||event.item?.usage; if(usage) status.tokens={in:Number(usage.input_tokens??status.tokens?.in??0),cached:Number(usage.cached_input_tokens??status.tokens?.cached??0),out:Number(usage.output_tokens??status.tokens?.out??0)};
+  if(event.thread_id) session=event.thread_id;
+  if(event.type==="turn.completed"&&event.usage) {
+    const usage=usageTokens(event.usage); for(const key of Object.keys(completed)) completed[key]+=usage[key];
+  } else if(event.type==="token_count") {
+    const total=event.info?.total_token_usage;
+    const usage=usageTokens(total||event.info?.last_token_usage||event.usage||event.info?.usage||{});
+    for(const key of Object.keys(counted)) counted[key]=total?Math.max(counted[key],usage[key]):counted[key]+usage[key];
+  }
+  tokens=Object.fromEntries(Object.keys(completed).map(key=>[key,Math.max(completed[key],counted[key])]));
+  status.session=session; status.tokens=tokens;
   const item=event.item||{}; const text=item.text||event.text; const command=item.command||item.cmd||event.command;
-  if(item.type==="agent_message"&&text) status.last_message=clip(text); else if(command) status.last_message=clip(command); atomic();
+  if((item.type==="agent_message"||item.type==="reasoning")&&text) status.last_message=clip(text); else if(command) status.last_message=clip(command);
+  if(!budgetReason&&tokens.in>limit) { budgetReason=`token budget exceeded (${tokens.in} > ${limit})`; status.last_message=budgetReason; stop(); }
+  atomic();
 };
-let carry=""; process.stdin.setEncoding("utf8"); process.stdin.on("data",chunk=>{ carry+=chunk; const lines=carry.split(/\r?\n/); carry=lines.pop(); for(const line of lines) if(line) update(line); }); process.stdin.on("end",()=>{ if(carry) update(carry); });
-' "$STATUS_NATIVE_FILE"
-    return "${PIPESTATUS[0]}"
-  fi
-  "$@" >"$EVENTS" 2>"$ERRLOG"
+child.stdout.setEncoding("utf8");
+child.stdout.on("data",chunk=>{ fs.writeSync(events,chunk); if(publicEvents!==null) fs.writeSync(publicEvents,chunk); carry+=chunk; const lines=carry.split(/\r?\n/); carry=lines.pop(); for(const line of lines) if(line) update(line); });
+child.on("error",error=>process.stderr.write(`codex launch failed: ${error.message}\n`));
+child.on("close",(code,signal)=>{
+  clearTimeout(timer);
+  if(carry) update(carry);
+  fs.closeSync(events); if(publicEvents!==null) fs.closeSync(publicEvents);
+  fs.writeFileSync(eventsFile+".summary",JSON.stringify({session,tokens,budgetReason}));
+  process.exitCode=budgetReason?4:timedOut?124:(code??(signal?137:2));
+});
+' "$STATUS_NATIVE_FILE" "$EVENTS" "$STATUS_EVENTS_FILE" "$ERRLOG" "$LLM_LANE_MAX_INPUT_TOKENS" "$RESUME" "$TIMEOUT" "$@"
 }
 
 case "$MODE" in
   implement)
     if [ -z "$RESUME" ]; then
-      capture_codex ${T:+$T "$TIMEOUT"} codex exec "${COMMON_ARGS[@]}" --cd "$ROOT" - < "$PROMPT"
+      capture_codex codex exec "${COMMON_ARGS[@]}" --cd "$ROOT" - < "$PROMPT"
     else
-      capture_codex ${T:+$T "$TIMEOUT"} codex exec resume "${COMMON_ARGS[@]}" "$RESUME" - < "$PROMPT"
+      capture_codex codex exec resume "${COMMON_ARGS[@]}" "$RESUME" - < "$PROMPT"
     fi ;;
   analyze)
-    capture_codex ${T:+$T "$TIMEOUT"} codex exec "${COMMON_ARGS[@]}" --cd "$ROOT" - < "$PROMPT" ;;
+    capture_codex codex exec "${COMMON_ARGS[@]}" --cd "$ROOT" - < "$PROMPT" ;;
   review)
-    capture_codex ${T:+$T "$TIMEOUT"} codex exec "${COMMON_ARGS[@]}" --cd "$ROOT" - < "$PROMPT" 2>"$ERRLOG" ;;
+    capture_codex codex exec "${COMMON_ARGS[@]}" --cd "$ROOT" - < "$PROMPT" ;;
 esac
 RC=$?
 
 # --- parse events -----------------------------------------------------------
-read -r SESSION TOK_IN TOK_CACHED TOK_OUT < <(node -e '
-const fs=require("fs"); let session=process.argv[2]||"unknown",usage={};
-for(const line of fs.readFileSync(process.argv[1],"utf8").split(/\r?\n/)){
-  try { const event=JSON.parse(line); if(event.thread_id) session=event.thread_id;
-    if(event.type==="turn.completed") usage=event.usage||{};
-  } catch {}
-}
-console.log([session,usage.input_tokens||0,usage.cached_input_tokens||0,usage.output_tokens||0].join(" "));
-' "$EVENTS" "$RESUME")
+read -r SESSION TOK_IN TOK_CACHED TOK_OUT BUDGET_REASON < <(node -e '
+const fs=require("fs"); let summary={}; try { summary=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); } catch {}
+console.log([summary.session||process.argv[2]||"unknown",summary.tokens?.in||0,summary.tokens?.cached||0,summary.tokens?.out||0,summary.budgetReason||""].join(" "));
+' "$EVENTS.summary" "$RESUME")
 EVENT_ERRORS=$(grep '"type":"error"' "$EVENTS" | grep -o '"message":"[^"]*"' | cut -d'"' -f4 | grep -v -i 'skills context budget' | head -5)
 # `--output-last-message` is not honoured on `exec resume`/`review`; fall back to the last agent_message event.
 if [ ! -s "$FINAL" ]; then
@@ -341,6 +379,11 @@ echo
 echo "===== END ====="
 echo "SESSION: $SESSION"
 echo "TOKENS: in=${TOK_IN:-0} cached=${TOK_CACHED:-0} out=${TOK_OUT:-0}"
+
+if [ -n "$BUDGET_REASON" ]; then
+  echo "STATUS: timeout"; echo "REASON: $BUDGET_REASON"; status_write "done timeout" 4 "$BUDGET_REASON"
+  log_usage timeout "$TOK_IN" "$TOK_CACHED" "$TOK_OUT" "$SESSION"; exit 4
+fi
 
 if [ "$RC" -eq 124 ] || [ "$RC" -eq 137 ]; then
   echo "STATUS: timeout"; echo "REASON: wall clock of ${TIMEOUT}s exceeded"; status_write "done timeout" "$RC"

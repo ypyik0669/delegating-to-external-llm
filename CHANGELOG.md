@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.7.0 — 2026-09-21
+
+### Added
+- `lane-run.mjs --detach` starts independent implementation, analysis or batch drivers on Windows and Linux, printing lane slugs, status paths and the watcher command. Status files include PID, report and log paths; every finished lane saves a verbatim `*.report.txt`.
+- `--wait <slug…> --timeout 540` polls every three seconds, returning saved reports and outcome codes (0/5/2), verbatim RUNNING snapshots on timeout (10), or MISSING after a 30-second grace period (4). Known sessions include resume commands in reports.
+- Env-only `LLM_LANE_MAX_INPUT_TOKENS` (default 3000000) stops codex when cumulative prompt usage exceeds the limit, including cached input, with a token-budget timeout reason. The live event monitor enforces it with or without status output.
+
+### Changed
+- Default dispatch uses one visible thin subagent per lane, launched in the same message up to the cap. Implementer and analyst wrappers only detach, echo SLUG/WATCH, wait in nine-minute slices, relay RUNNING verbatim and return LANE REPORTs. Main-session background Bash is reserved for batches.
+- Private home's template requests concise reasoning summaries; implementation prompts ask codex to maintain and refresh an update_plan plan. Existing private/shared configs remain untouched.
+
+### Fixed
+- Recover non-terminal statuses whose driver has exited as unavailable reports instead of repeatedly timing out in `--wait`.
+- Reject duplicate batch slugs before launching any work; format elapsed times of at least a minute as `12m 05s`.
+- Include every test file in the package test script, isolate lane-status fixtures, and cover detach/wait, missing slugs, outcome propagation, elapsed formatting and live token-budget termination.
+
+### Known limitations
+- `--batch` uses spec basenames as slugs, so matching basenames across repositories collide and are rejected; use distinct spec basenames.
+
 ## 2.6.0 — 2026-09-21
 
 ### Added

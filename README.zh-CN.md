@@ -85,7 +85,11 @@ node ~/.claude/plugins/…/delegating-to-external-llm/scripts/setup.mjs   # 或�
 
 ### 看进度
 
-每次后台启动通道，都必须报告启动情况并附上 `lane-run.mjs` 打印的完整 `WATCH:` 行；在终端执行该前缀后面的命令即可看进度。该命令运行 `lane-status.mjs --watch`，用 `--dir` 指向本次启动的状态目录，每两秒刷新一次。在 Claude Code 中使用 `/delegating-to-external-llm:status` 可查看一次阶段、耗时、token 和最后消息的原样表格（保持相同的状态目录环境设置）。
+默认在同一条消息中为每条通道启动一个 `codex-implementer` 子代理，不超过并发上限（默认 2）。Claude Code 会显示各子代理条目：先原样显示 `SLUG:` 和 `WATCH:`，每段等待结束后显示原样的 `RUNNING` 行，最后返回完整的 LANE REPORT。薄包装子代理先运行 `lane-run.mjs --detach`，再循环执行 `--wait <slug> --timeout 540`，每次等待不超过九分钟；不读源码、不修代码、不用 `sleep` 轮询。`codex-analyst` 的分析通道也使用此流程。主会话只有显式 `--batch` 才能使用后台 Bash。
+
+每次派发回复都包含完整的 `WATCH:` 行。在终端执行该前缀后面的命令，即可看到每两秒刷新的阶段、耗时（如 `12m 05s`）、token 和最后消息；`--dir` 指向本次启动的状态目录。`/delegating-to-external-llm:status` 在相同状态目录环境下显示一次原样快照。分离运行会在状态目录保存日志和报告：等待完成返回报告（退出码 0/5/2），达到等待时限返回 `RUNNING`（10），30 秒仍无状态文件返回 `MISSING`（4）。已知会话 ID 时，报告附带 `RESUME: codex resume <thread-id>`。
+
+实时事件监视器按每次 codex 调用执行 `LLM_LANE_MAX_INPUT_TOKENS=3000000` 输入 token 上限，包含缓存输入。在 `~/.claude/llm-relay.env` 中设置此仅环境配置项，或用环境变量覆盖；setup 不会询问它。超限会终止 codex，返回 `STATUS: timeout` 和 `REASON: token budget exceeded (<n> > <limit>)`。新建私有 home 默认请求简洁推理摘要以显示进度，不覆盖已有配置。
 
 ## 你实际会看到什么
 
