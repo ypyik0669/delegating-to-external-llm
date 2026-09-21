@@ -6,7 +6,7 @@
 
 一个 Claude Code 插件：让 Claude 只当**架构师**，把**分析、实现、代码评审**都交给你**自己的 OpenAI 兼容中转**（任意 base URL + API key）上的外部模型。外部模型读仓库、起草 spec；确定性脚本驱动它实现和验证；它再跨厂商评审 diff；Claude 只做决定、批 spec、下终审。Claude 不读代码学习仓库、不写实现、不逐轮看管通道。
 
-插件里没有任何代理钉死模型。通道跑你配置的 `LLM_MODEL`，其余全部跟随会话模型，只有你自己能切换模型。
+插件里没有任何代理钉死模型。通道跑中转模型（跟随你的 codex 配置，或用 `LLM_MODEL` 覆盖），其余全部跟随会话模型，只有你自己能切换模型。
 
 架构模式源自 Dan McAteer 的 [fable-advisor](https://github.com/DannyMac180/fable-advisor)，改造为"单一中转模型 + 两种投递方式 + 硬性门禁"。
 
@@ -125,7 +125,7 @@ who did the work
 
 **真的更省吗？** 同样两个任务，主对话之外的 Claude 消耗从约 20.1 万降到约 2.6 万 token（见实测数据）。外部模型的费用取决于你中转的计价；实测中约 85% 的 prompt token 是缓存命中。剩下的 Claude 成本是主对话本身，保持会话精简。
 
-**用什么模型？** 你配什么就是什么。通道跑你中转上的 `LLM_MODEL`；Claude 和所有代理跑你的会话模型。插件从不钉死或切换模型。
+**用什么模型？** 你配什么就是什么。通道跑中转模型（跟随你的 codex 配置，或用 `LLM_MODEL` 覆盖）；Claude 和所有代理跑你的会话模型。插件从不钉死或切换模型。
 
 **中转或 codex 挂了怎么办？** 通道报 `unavailable`，Claude 如实告诉你，不会"那我自己来"，这正是设计目的。
 
@@ -174,7 +174,7 @@ node ~/.claude/skills/delegating-to-external-llm/scripts/setup.mjs
 |---|---|
 | Relay base URL | 例如 `https://relay.example.com`（不带 `/v1`） |
 | API key | 不回显 |
-| Model | 默认 `gpt-6-astra`，可填你中转支持的任意模型名 |
+| Model | 留空跟随 `~/.codex/config.toml`；也可填你中转支持的任意模型名 |
 | Default reasoning effort | `low|medium|high|xhigh`，spec 未写 `REASONING:` 时的默认值 |
 | Minimum input tokens | 一般填 `0`；若你的中转拒绝小请求（如"不接受少于 2000 token"），填 `2000`，`llm.mjs` 会自动填充短提示 |
 | codex permission level | `workspace`（只能写仓库内、无网络，默认）、`workspace-net`（仓库 + 网络）、`yolo`（无沙箱、不弹确认，模型能做你账号能做的一切） |
@@ -182,7 +182,7 @@ node ~/.claude/skills/delegating-to-external-llm/scripts/setup.mjs
 随后自动冒烟测试中转，并报告是否检测到 codex。非交互方式：
 
 ```
-node scripts/setup.mjs --base https://relay.example.com --key sk-... --model gpt-6-astra --reasoning xhigh --min-input 0 --codex-access workspace
+node scripts/setup.mjs --base https://relay.example.com --key sk-... --model <model> --reasoning xhigh --min-input 0 --codex-access workspace
 ```
 
 在 Claude Code 内也可以用 `/delegating-to-external-llm:setup` 走同样流程（`--check` 只做复验）。
@@ -220,7 +220,7 @@ spec 里出现代码，就说明这个任务还没真正委托出去。通道会
 
 ```
 LANE REPORT
-LANE: codex-implementer (gpt-6-astra via relay, effort: high)
+LANE: codex-implementer (relay model, effort: high)
 STATUS: complete | partial | timeout | unavailable | refused
 OBJECTIVE / CHANGES / VERIFIED（通道自己重跑，计数原样）/ MODEL SAID / ROUNDS / JUDGMENT CALLS / GAPS / REASON
 ```
@@ -316,3 +316,5 @@ llm-relay.env.example                          真实文件永远不要提交
 ## 许可证
 
 MIT
+
+模型解析顺序：`LLM_MODEL` → `${CODEX_HOME:-~/.codex}/config.toml` 中首个顶层 `model = "..."`。两者都为空时，codex 使用自身默认值，chat 通道报错并且不发送请求。

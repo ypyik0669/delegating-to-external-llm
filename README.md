@@ -6,7 +6,7 @@
 
 A Claude Code plugin that turns Claude into the **architect** and hands **analysis, implementation and code review** to an external model on **your own OpenAI-compatible relay** (any base URL + API key). The external model reads the repo and drafts the spec; deterministic scripts drive it to implement and verify; it reviews the diff cross-vendor; Claude only decides, approves, and gives the final verdict. Claude never reads the codebase to learn it, never types the code, and never babysits a lane.
 
-No agent in this plugin pins a model. Lanes run whatever `LLM_MODEL` you configure; everything else runs on your session model. Only you switch models.
+No agent in this plugin pins a model. Lanes run the relay model (whatever your codex is set to, or `LLM_MODEL`); everything else runs on your session model. Only you switch models.
 
 Modeled on the architect pattern from [fable-advisor](https://github.com/DannyMac180/fable-advisor) by Dan McAteer, adapted to a single relay-served model with two delivery mechanisms and hard enforcement.
 
@@ -125,7 +125,7 @@ who did the work
 
 **Is this cheaper?** Claude-side spend outside the main chat dropped from ~201k to ~26k tokens on the same two tasks (see Measured). The external model's cost depends on your relay's pricing; ~85% of its prompt tokens were cache hits in our runs. The remaining Claude cost is the main conversation itself — keep it small.
 
-**Which models?** Whatever you configure. Lanes run `LLM_MODEL` on your relay; Claude and every agent run on your session model. The plugin never pins or switches a model.
+**Which models?** Whatever you configure. Lanes run the relay model (whatever your codex is set to, or `LLM_MODEL`); Claude and every agent run on your session model. The plugin never pins or switches a model.
 
 **What if the relay or codex is down?** Lanes report `unavailable` and Claude tells you. It does not "just do it itself" — that is the point.
 
@@ -174,7 +174,7 @@ It asks for:
 |---|---|
 | Relay base URL | e.g. `https://relay.example.com` (no `/v1`) |
 | API key | echo off |
-| Model | default `gpt-6-astra`; any slug your relay serves |
+| Model | (empty = follow ~/.codex/config.toml); or any slug your relay serves |
 | Default reasoning effort | `low|medium|high|xhigh`, used when a spec omits `REASONING:` |
 | Minimum input tokens | `0` unless your relay rejects small requests; then e.g. `2000` and `llm.mjs` pads short prompts automatically |
 | codex permission level | `workspace` (repo-only, no network — default), `workspace-net` (repo + network), `yolo` (no sandbox, no approval prompts: the model can do anything your account can) |
@@ -182,7 +182,7 @@ It asks for:
 Then it smoke-tests the relay and reports whether codex is present. Non-interactive:
 
 ```
-node scripts/setup.mjs --base https://relay.example.com --key sk-... --model gpt-6-astra --reasoning xhigh --min-input 0 --codex-access workspace
+node scripts/setup.mjs --base https://relay.example.com --key sk-... --model <model> --reasoning xhigh --min-input 0 --codex-access workspace
 ```
 
 Inside Claude Code, `/delegating-to-external-llm:setup` walks you through the same thing (and `--check` re-verifies).
@@ -220,7 +220,7 @@ Every lane returns:
 
 ```
 LANE REPORT
-LANE: codex-implementer (gpt-6-astra via relay, effort: high)
+LANE: codex-implementer (relay model, effort: high)
 STATUS: complete | partial | timeout | unavailable | refused
 OBJECTIVE / CHANGES / VERIFIED (re-run by the lane, verbatim counts) / MODEL SAID / ROUNDS / JUDGMENT CALLS / GAPS / REASON
 ```
@@ -316,3 +316,5 @@ Architecture and doctrine adapted from [DannyMac180/fable-advisor](https://githu
 ## License
 
 MIT
+
+Model resolution: `LLM_MODEL` → first top-level `model = "..."` in `${CODEX_HOME:-~/.codex}/config.toml`. With neither set, codex uses its own default; the chat lane reports an error without sending a request.

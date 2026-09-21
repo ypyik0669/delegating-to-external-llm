@@ -41,10 +41,24 @@ if [ -f "$ENVF" ]; then
     case "$k" in LLM_BASE|LLM_KEY|LLM_MODEL|LLM_CODEX_ACCESS) [ -z "${!k:-}" ] && eval "$k=\"\$v\"" ;; esac
   done < "$ENVF"
 fi
-LLM_BASE="${LLM_BASE:-${EVAL_LLM_BASE:-}}"; LLM_KEY="${LLM_KEY:-${EVAL_LLM_KEY:-}}"; LLM_MODEL="${LLM_MODEL:-${EVAL_LLM_MODEL:-gpt-6-astra}}"; LLM_CODEX_ACCESS="${LLM_CODEX_ACCESS:-${EVAL_LLM_CODEX_ACCESS:-workspace}}"
+LLM_BASE="${LLM_BASE:-${EVAL_LLM_BASE:-}}"; LLM_KEY="${LLM_KEY:-${EVAL_LLM_KEY:-}}"; LLM_CODEX_ACCESS="${LLM_CODEX_ACCESS:-${EVAL_LLM_CODEX_ACCESS:-workspace}}"
+
+# Read the user's config before switching to the lane's private CODEX_HOME.
+codex_config_model() {
+  local config="${CODEX_HOME:-$HOME/.codex}/config.toml"
+  [ -r "$config" ] || return 0
+  awk '
+    /^[[:space:]]*\[/ { exit }
+    /^[[:space:]]*model[[:space:]]*=[[:space:]]*"[^"]*"[[:space:]]*(#.*)?$/ {
+      sub(/^[[:space:]]*model[[:space:]]*=[[:space:]]*"/, "")
+      sub(/"[[:space:]]*(#.*)?$/, "")
+      print; exit
+    }
+  ' "$config"
+}
 
 MODE=implement; SPEC=""; TASK=""; BASE=""; OUT=""
-MODEL="$LLM_MODEL"; EFFORT=""; TIMEOUT=600; ACCESS="$LLM_CODEX_ACCESS"; FILES=""; RESUME=""
+MODEL="${LLM_MODEL:-$(codex_config_model)}"; EFFORT=""; TIMEOUT=600; ACCESS="$LLM_CODEX_ACCESS"; FILES=""; RESUME=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --spec) SPEC="$2"; shift 2 ;;
@@ -71,7 +85,7 @@ READONLY_MODE=0; [ "$MODE" != implement ] && READONLY_MODE=1
 log_usage() { # status tokens_in tokens_cached tokens_out session
   local T1; T1=$(date +%s%3N 2>/dev/null || date +%s000)
   node "$HERE/usage-log.mjs" \
-    --lane "codex-$MODE" --model "$MODEL" --effort "${EFFORT:-default}" --access "$ACCESS" \
+    --lane "codex-$MODE" --model "${MODEL:-codex-default}" --effort "${EFFORT:-default}" --access "$ACCESS" \
     --status "$1" --in "${2:-0}" --cached "${3:-0}" --out "${4:-0}" \
     --duration "$((T1 - T0))" --project "$(pwd -W 2>/dev/null || pwd)" --session "${5:-}" >/dev/null 2>&1 || true
 }
@@ -186,7 +200,6 @@ T=$(command -v gtimeout || command -v timeout || true)
 [ -z "$T" ] && echo "WARN: no timeout binary; codex runs uncapped" >&2
 
 COMMON_ARGS=(
-  --model "$MODEL"
   -c model_provider=relay
   -c 'model_providers.relay.name="relay"'
   -c "model_providers.relay.base_url=\"$BASE_URL\""
@@ -197,6 +210,7 @@ COMMON_ARGS=(
   --json
   --output-last-message "$FINAL"
 )
+[ -n "$MODEL" ] && COMMON_ARGS+=(--model "$MODEL")
 [ -n "$EFFORT" ] && COMMON_ARGS+=(-c "model_reasoning_effort=\"$EFFORT\"")
 
 set +e

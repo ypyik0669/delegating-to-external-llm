@@ -1,6 +1,6 @@
 ---
 name: delegating-to-external-llm
-description: Use when the user wants coding work done by an external model instead of by you — "delegate all coding", "you are only the brain", "only orchestrate", "don't write code yourself", "use GPT / codex / gpt-6-astra / the relay to do it", "让外部模型写", "用 GPT 做" — or when the usage ledger shows the external model was barely used. Routes analysis, implementation and cross-vendor review to the relay model through deterministic scripts, so Claude spends tokens only on decisions, a spec review, and a verdict.
+description: Use when the user wants coding work done by an external model instead of by you — "delegate all coding", "you are only the brain", "only orchestrate", "don't write code yourself", "use GPT / codex / the relay to do it", "让外部模型写", "用 GPT 做" — or when the usage ledger shows the external model was barely used. Routes analysis, implementation and cross-vendor review to the relay model through deterministic scripts, so Claude spends tokens only on decisions, a spec review, and a verdict.
 ---
 
 # Delegating to an External LLM — the architect's routing doctrine
@@ -11,12 +11,12 @@ You are the architect. You own decomposition, spec approval, routing, and the fi
 
 **Two tests of compliance.** (1) Where the code came from: the codex diff and the ledger. (2) Who spent the tokens: the ledger's `claude : external` ratio. A session that delegated the typing but spent most of its tokens on Claude reading code and babysitting lanes has failed the second test.
 
-Models: the lanes run whatever `LLM_MODEL` names in `~/.claude/llm-relay.env` (gpt-6-astra by default). You and every agent in this plugin run on the session model. Nothing in this plugin pins or switches a model; only the user does.
+Models: the lanes run the relay model (whatever your codex is set to, or `LLM_MODEL` in `~/.claude/llm-relay.env`). You and every agent in this plugin run on the session model. Nothing in this plugin pins or switches a model; only the user does.
 
 ## When to Use
 
 - User says the external model must do the work, or that you must only orchestrate
-- User names the lane model (gpt-6-astra, codex, "the GPT relay") or a reasoning effort
+- User names the lane model (codex, "the GPT relay") or a reasoning effort
 - User complains the ledger shows too few calls, too little spend, or too much Claude spend
 - The plugin is enabled (the hook reminder appears at the top of the turn) — then every coding task, no phrase needed
 
@@ -153,3 +153,5 @@ ROUNDS: n — fresh in=… out=… → ran | resume … / SESSION: <thread id> /
 2. `npm i -g @openai/codex@latest` (≥ 0.155). No `codex login`: the lane points codex at the relay, under a private `~/.claude/llm-codex-home` seeded from `codex-home/config.toml` — your `~/.codex` (MCP servers, AGENTS.md, profiles) never loads into a lane.
 3. Optional prices for USD in the ledger: `LLM_PRICE_IN/CACHED/OUT`, `CLAUDE_PRICE_IN/OUT` in the env file.
 4. Nothing else: with the plugin enabled, a hook injects a one-paragraph reminder on session start and on every prompt (no trigger phrase, survives compaction) and the edit gate is armed. To code normally, disable the plugin. (Editing `~/.claude/CLAUDE.md` is not required.)
+
+Model resolution: `LLM_MODEL` → first top-level `model = "..."` in `${CODEX_HOME:-~/.codex}/config.toml`. With neither set, codex uses its own default; the chat lane reports an error without sending a request.

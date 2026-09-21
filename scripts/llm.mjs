@@ -37,6 +37,17 @@ function readEnvFile(file) {
       }),
   );
 }
+function codexConfigModel() {
+  const config = path.join(process.env.CODEX_HOME || os.homedir() + "/.codex", "config.toml");
+  let text;
+  try { text = fs.readFileSync(config, "utf8"); } catch { return ""; }
+  for (const line of text.split(/\r?\n/)) {
+    if (/^\s*\[/.test(line)) break;
+    const match = line.match(/^\s*model\s*=\s*"([^"]*)"\s*(?:#.*)?$/);
+    if (match) return match[1];
+  }
+  return "";
+}
 const home = os.homedir();
 const raw = {
   ...readEnvFile(path.join(home, ".claude", "astra.env")), // legacy name
@@ -46,7 +57,7 @@ const raw = {
 const env = {
   BASE: raw.LLM_BASE || raw.ASTRA_BASE || raw.EVAL_LLM_BASE,
   KEY: raw.LLM_KEY || raw.ASTRA_KEY || raw.EVAL_LLM_KEY,
-  MODEL: raw.LLM_MODEL || raw.ASTRA_MODEL || raw.EVAL_LLM_MODEL || "gpt-6-astra",
+  MODEL: raw.LLM_MODEL || codexConfigModel(),
   REASONING: raw.LLM_REASONING || raw.ASTRA_REASONING || "xhigh",
   MIN_INPUT: Number(raw.LLM_MIN_INPUT_TOKENS || 0) || 0,
 };
@@ -78,6 +89,10 @@ for (let i = 0; i < args.length; i++) {
   else if (a === "--pad") pad = Number(args[++i]) || 0;
   else if (a === "-f" || a === "--file") files.push(args[++i]);
   else rest.push(a);
+}
+if (!model) {
+  console.error("llm: no model: set LLM_MODEL or a model in ~/.codex/config.toml");
+  process.exit(2);
 }
 let prompt = rest.join(" ").trim();
 if (specPath) {

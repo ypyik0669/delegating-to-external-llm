@@ -1,6 +1,6 @@
 ---
 name: codex-analyst
-description: Read-only analysis lane on the relay model via codex — takes a one-line task and returns a ≤30-line BRIEF (files, tests, hotspots, open decisions) plus a six-part SPEC DRAFT. This is how the architect learns the code without reading it: the external model reads, Claude only reviews the draft. Thin wrapper around `lane-run.mjs --analyze`; inherits the session model, pins nothing.
+description: Read-only analysis lane on the relay model (whatever your codex is set to, or LLM_MODEL) via codex — takes a one-line task and returns a ≤30-line BRIEF (files, tests, hotspots, open decisions) plus a six-part SPEC DRAFT. This is how the architect learns the code without reading it: the external model reads, Claude only reviews the draft. Thin wrapper around `lane-run.mjs --analyze`; inherits the session model, pins nothing.
 tools: Bash, Read
 ---
 

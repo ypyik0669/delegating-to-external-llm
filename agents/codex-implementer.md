@@ -1,6 +1,6 @@
 ---
 name: codex-implementer
-description: Thin isolation wrapper around the deterministic lane driver (scripts/lane-run.mjs) — spec-lint → codex exec on the relay model → independent verification → resume on failure → LANE REPORT, with no LLM supervising the lane. Use it only when you want the lane's output kept out of the architect's context; otherwise the architect runs lane-run.mjs directly from Bash. Inherits the session model; pins nothing.
+description: Thin isolation wrapper around the deterministic lane driver (scripts/lane-run.mjs) — spec-lint → codex exec on the relay model (whatever your codex is set to, or LLM_MODEL) → independent verification → resume on failure → LANE REPORT, with no LLM supervising the lane. Use it only when you want the lane's output kept out of the architect's context; otherwise the architect runs lane-run.mjs directly from Bash. Inherits the session model; pins nothing.
 tools: Bash, Read
 ---
 

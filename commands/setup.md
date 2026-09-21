@@ -10,12 +10,12 @@ Help the user configure the external-model relay for this plugin. Do **not** ask
    node "${CLAUDE_PLUGIN_ROOT}/scripts/setup.mjs"
    ```
 
-   It prompts for the relay base URL (OpenAI-compatible, without `/v1`), the API key (typed with echo off), the model (default `gpt-6-astra`) and the default reasoning effort, writes `~/.claude/llm-relay.env` with mode 600, and runs a smoke test on both lanes.
+   It prompts for the relay base URL (OpenAI-compatible, without `/v1`), the API key (typed with echo off), the relay model (whatever your codex is set to, or `LLM_MODEL`; empty = follow `~/.codex/config.toml`) and the default reasoning effort, writes `~/.claude/llm-relay.env` with mode 600, and runs a smoke test on both lanes.
 
    Non-interactive form, if they prefer to pass flags themselves:
 
    ```
-   node "${CLAUDE_PLUGIN_ROOT}/scripts/setup.mjs" --base https://relay.example.com --key sk-... --model gpt-6-astra --reasoning xhigh
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/setup.mjs" --base https://relay.example.com --key sk-... --model <model> --reasoning xhigh
    ```
 
 2. After they confirm it ran, verify without exposing the key:

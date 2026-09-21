@@ -3,7 +3,7 @@
 // Writes ~/.claude/llm-relay.env (mode 600) and runs a smoke test.
 //
 //   node scripts/setup.mjs                       # prompts for everything
-//   node scripts/setup.mjs --base https://relay.example.com --key sk-... [--model gpt-6-astra] [--reasoning xhigh] [--min-input 0] [--codex-access workspace|workspace-net|yolo] [--no-test]
+//   node scripts/setup.mjs --base https://relay.example.com --key sk-... [--model <slug>] [--reasoning xhigh] [--min-input 0] [--codex-access workspace|workspace-net|yolo] [--no-test]
 //
 // The key is read with echo off when prompted. Nothing is sent anywhere except
 // to the relay you name, and only for the smoke test.
@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = path.join(os.homedir(), ".claude", "llm-relay.env");
-const DEFAULTS = { model: "gpt-6-astra", reasoning: "xhigh", minInput: "0", codexAccess: "workspace" };
+const DEFAULTS = { model: "", reasoning: "xhigh", minInput: "0", codexAccess: "workspace" };
 const ACCESS = ["workspace", "workspace-net", "yolo"];
 const EFFORTS = ["low", "medium", "high", "xhigh"];
 
@@ -80,7 +80,7 @@ if (!key) {
   const cur = existing.LLM_KEY ? ` (enter to keep ${mask(existing.LLM_KEY)})` : "";
   key = (await askHidden(`API key${cur}`)) || existing.LLM_KEY || "";
 }
-if (!model) model = await ask("Model", existing.LLM_MODEL || DEFAULTS.model);
+if (model === null) model = await ask("Model (empty = follow ~/.codex/config.toml)", existing.LLM_MODEL || DEFAULTS.model);
 if (!reasoning) reasoning = await ask(`Default reasoning effort (${EFFORTS.join("|")})`, existing.LLM_REASONING || DEFAULTS.reasoning);
 if (minInput === null) minInput = await ask("Minimum input tokens your relay requires per request (0 if none; some relays reject tiny requests)", existing.LLM_MIN_INPUT_TOKENS || DEFAULTS.minInput);
 if (!codexAccess) codexAccess = await ask("codex permission level: workspace (repo-only, no network) | workspace-net (repo + network) | yolo (no sandbox, no approvals)", existing.LLM_CODEX_ACCESS || DEFAULTS.codexAccess);
@@ -107,7 +107,7 @@ const body = [
 fs.writeFileSync(ENV_PATH, body, { encoding: "utf8", mode: 0o600 });
 try { fs.chmodSync(ENV_PATH, 0o600); } catch {}
 console.log(`\nWrote ${ENV_PATH}`);
-console.log(`  LLM_BASE=${base}\n  LLM_KEY=${mask(key)}\n  LLM_MODEL=${model}\n  LLM_REASONING=${reasoning}\n  LLM_MIN_INPUT_TOKENS=${minInput}\n  LLM_CODEX_ACCESS=${codexAccess}`);
+console.log(`  LLM_BASE=${base}\n  LLM_KEY=${mask(key)}\n  LLM_MODEL=${model || "(empty = follow ~/.codex/config.toml)"}\n  LLM_REASONING=${reasoning}\n  LLM_MIN_INPUT_TOKENS=${minInput}\n  LLM_CODEX_ACCESS=${codexAccess}`);
 if (codexAccess === "yolo") console.log("  ! yolo: codex runs with no sandbox and no approval prompts — it can do anything your user account can.");
 
 if (opt.test) {

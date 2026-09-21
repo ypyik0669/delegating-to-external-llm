@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.4.0 — 2026-09-21
+
+### Changed
+- Model follows the user's codex config; no vendor-model pins. `LLM_MODEL` overrides the top-level model in `${CODEX_HOME:-~/.codex}/config.toml`. With neither set, codex chooses its default and chat reports a configuration error.
+- Setup accepts an empty model to follow codex config.
+- **Breaking change:** removed the `ASTRA_MODEL` / `EVAL_LLM_MODEL` fallbacks; use `LLM_MODEL` or codex config instead.
+- `codex_config_model` reads only a double-quoted top-level `model = "..."`.
+
 ## 2.3.0 — 2026-09-19
 
 ### Changed

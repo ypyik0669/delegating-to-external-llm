@@ -11,7 +11,8 @@
     {
       "name": "delegating-to-external-llm",
       "source": "./",
-      "description": "Claude is only the brain: every implementation task is routed to gpt-6-astra (or any model) on your relay with a per-task reasoning effort, verified by re-running tests, and reviewed by llm-advisor before it ships."
+      "version": "2.4.0",
+      "description": "Claude is only the brain: every implementation task is routed to the relay model (follows your codex config) with a per-task reasoning effort, verified by re-running tests, and reviewed by llm-advisor before it ships."
     }
   ]
 }
