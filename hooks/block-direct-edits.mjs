@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// PreToolUse hook: refuse Edit/Write/NotebookEdit on repository source files
-// unless an external-model output file exists for this project. This turns
+// PreToolUse hook: refuse Edit/Write/NotebookEdit on code files inside a git
+// work tree unless an external-model output file exists for this project. Paths
+// outside git work trees and documentation/data files are always allowed. This turns
 // "the brain does not code" from a memory into a mechanism.
 //
 // Active whenever the plugin is enabled; LLM_DELEGATION=0 disables it (tests / one-off sessions).
@@ -22,6 +23,24 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+const DOC_DATA_EXTENSIONS = new Set([".md", ".mdx", ".txt", ".rst", ".adoc", ".csv", ".json", ".yaml", ".yml", ".toml", ".ini", ".svg", ".png", ".jpg", ".gif", ".pdf"]);
+
+export function isInsideGitWorkTree(inputPath) {
+  let current = path.resolve(inputPath);
+  try { if (!fs.statSync(current).isDirectory()) current = path.dirname(current); } catch { current = path.dirname(current); }
+  while (true) {
+    if (fs.existsSync(path.join(current, ".git"))) return true;
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
+
+export function isDocOrData(inputPath) {
+  const lower = path.basename(String(inputPath)).toLowerCase();
+  return lower.endsWith(".env.example") || DOC_DATA_EXTENSIONS.has(path.extname(lower));
+}
+
 export function decide(input, env = process.env, now = Date.now()) {
   const tool = input.tool_name || "";
   if (!/^(Edit|Write|NotebookEdit)$/.test(tool)) return null;
@@ -33,6 +52,8 @@ export function decide(input, env = process.env, now = Date.now()) {
   const rawTarget = String(input.tool_input?.file_path || input.tool_input?.notebook_path || "");
   if (!rawTarget) return null;
   const target = path.resolve(cwd, rawTarget);
+
+  if (!isInsideGitWorkTree(target) || isDocOrData(target)) return null;
 
   const norm = (p) => p.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
   const inRepo = norm(target).startsWith(norm(cwd) + "/") || norm(target) === norm(cwd);

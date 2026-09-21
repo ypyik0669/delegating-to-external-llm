@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.6.0 — 2026-09-21
+
+### Added
+- Live per-lane `*.status.json` files track phase, elapsed time, tokens, session and last message; sibling `*.events.jsonl` files retain the codex events stream.
+- `scripts/lane-status.mjs --watch` refreshes the status table every two seconds; `/delegating-to-external-llm:status` prints it once verbatim. Every background launch must be reported with the driver's `WATCH:` line.
+
+### Changed
+- Hook scope narrowed to code inside git work trees; paths outside work trees and documentation/data extensions are allowed without external-model evidence.
+- `lane-run.mjs --batch` caps concurrency at 2 by default, configurable with `--concurrency` or `LLM_LANE_CONCURRENCY`; analyze lanes count toward the architect's concurrency budget too. Four concurrent codex sessions timed out the relay.
+- LANE_RUN timeout note: `lane-run.mjs --timeout` defaults to 900 seconds per codex invocation, not for the whole batch; verification commands have their own 900-second timeout. Use a background Bash call with timeout 3600000 for long-running lanes rather than polling the conversation.
+
 ## 2.5.0 — 2026-09-21
 
 ### Added

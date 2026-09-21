@@ -5,12 +5,13 @@
 // The architect calls this directly from Bash; the codex-implementer agent is just a thin wrapper.
 //
 //   node lane-run.mjs --spec <spec.md> [--max-resumes 2] [--timeout 900] [--json]
-//   node lane-run.mjs --batch a.md b.md c.md          # run several specs concurrently, one report each
+//   node lane-run.mjs --batch a.md b.md c.md [--concurrency 2] [--status-dir <dir>]
 //   node lane-run.mjs --analyze "<task>" [--cwd <repo>] [--effort medium] [--out brief.md]
 //
 // Reads FILES, REASONING, WORKTREE, MODEL from the spec. Runs verification commands in the worktree
 // with bash. Flags a lockfile change larger than --lockfile-max-lines (default 40) as partial.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -22,7 +23,8 @@ const LANE_SH = process.env.LANE_RUN_LANE_SH || path.join(HERE, "codex-lane.sh")
 const LOCKFILES = ["bun.lock", "bun.lockb", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "Cargo.lock", "poetry.lock", "uv.lock", "go.sum"];
 
 const args = process.argv.slice(2);
-const opt = { spec: null, batch: [], analyze: null, cwd: null, effort: null, out: null, maxResumes: 2, timeout: 900, json: false, lockMax: 40 };
+const envConcurrency = Number(process.env.LLM_LANE_CONCURRENCY);
+const opt = { spec: null, batch: [], analyze: null, cwd: null, effort: null, out: null, maxResumes: 2, timeout: 900, json: false, lockMax: 40, statusDir: null, concurrency: Number.isInteger(envConcurrency) && envConcurrency > 0 ? envConcurrency : 2, noWatch: false };
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === "--spec") opt.spec = args[++i];
@@ -34,11 +36,41 @@ for (let i = 0; i < args.length; i++) {
   else if (a === "--max-resumes") opt.maxResumes = Number(args[++i]) || 0;
   else if (a === "--timeout") opt.timeout = Number(args[++i]) || 900;
   else if (a === "--lockfile-max-lines") opt.lockMax = Number(args[++i]) || 40;
+  else if (a === "--status-dir") opt.statusDir = args[++i];
+  else if (a === "--concurrency") opt.concurrency = Number(args[++i]);
+  else if (a === "--no-watch") opt.noWatch = true;
   else if (a === "--json") opt.json = true;
   else if (a === "-h" || a === "--help") { console.log(fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 13).map((l) => l.replace(/^\/\/ ?/, "")).join("\n")); process.exit(0); }
 }
 
 const winPath = (p) => (process.platform === "win32" ? p.replace(/\\/g, "/") : p);
+const statusDir = path.resolve(opt.statusDir || process.env.LANE_STATUS_DIR || (process.env.CLAUDE_SCRATCHPAD_DIR ? path.join(process.env.CLAUDE_SCRATCHPAD_DIR, "lanes") : path.join(os.homedir(), ".claude", "lane-status")));
+const statusScript = path.resolve(HERE, "lane-status.mjs");
+const watchLine = `WATCH: node "${statusScript}" --watch --dir "${statusDir}"`;
+if (!opt.noWatch) (opt.json ? console.error : console.log)(watchLine);
+if (!Number.isInteger(opt.concurrency) || opt.concurrency < 1) { console.error("lane-run: --concurrency must be a positive integer"); process.exit(1); }
+if (opt.analyze && opt.batch.length) { console.error("lane-run: --batch --analyze is not supported; launch at most two analyze lanes at a time"); process.exit(1); }
+
+const slugFor = (specAbs) => path.basename(specAbs).replace(/\.[^.]+$/, "");
+const statusFileFor = (specAbs) => path.join(statusDir, `${slugFor(specAbs)}.status.json`);
+const statusExit = (status) => status === "complete" ? 0 : status === "partial" ? 5 : status === "refused" ? 3 : 2;
+const writeStatus = (file, patch = {}, reset = false) => {
+  try {
+    let current = {};
+    if (!reset) { try { current = JSON.parse(fs.readFileSync(file, "utf8")) || {}; } catch {} }
+    const now = new Date();
+    const startedAt = current.started_at || patch.started_at || now.toISOString();
+    const elapsed = Math.max(0, (now.getTime() - Date.parse(startedAt)) / 1000);
+    const next = { slug: patch.slug || current.slug || "", mode: patch.mode || current.mode || "implement", spec: patch.spec || current.spec || "", phase: patch.phase || current.phase || "lint", started_at: startedAt, updated_at: now.toISOString(), elapsed_s: Math.round(elapsed * 10) / 10, tokens: { in: Number(patch.tokens?.in ?? current.tokens?.in ?? 0), cached: Number(patch.tokens?.cached ?? current.tokens?.cached ?? 0), out: Number(patch.tokens?.out ?? current.tokens?.out ?? 0) }, session: patch.session || current.session || "unknown", last_message: String(patch.last_message ?? current.last_message ?? "").replace(/\s+/g, " ").trim().slice(0, 200), exit: patch.exit ?? current.exit ?? null };
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(next) + "\n", "utf8");
+    try { fs.renameSync(tmp, file); } catch (error) { try { fs.rmSync(tmp, { force: true }); } catch {} throw error; }
+  } catch (error) {
+    console.error(`lane status write failed: ${error.message}`);
+  }
+};
+
 const run = (cmd, cwd, timeoutSec) => {
   const r = spawnSync("bash", ["-lc", cmd], { cwd, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 * 1024 * 1024, env: process.env });
   const out = (r.stdout || "") + (r.stderr || "");
@@ -47,12 +79,25 @@ const run = (cmd, cwd, timeoutSec) => {
 const tail = (s, n) => s.trim().split(/\r?\n/).slice(-n).join("\n");
 const laneField = (out, key) => (out.match(new RegExp(`^${key}: ?(.*)$`, "m")) || [])[1]?.trim() || "";
 
+const updateFromOutput = (file, output) => {
+  const tokens = laneField(output, "TOKENS");
+  const values = Object.fromEntries([...tokens.matchAll(/(in|cached|out)=(\d+)/g)].map((match) => [match[1], Number(match[2])]));
+  writeStatus(file, { session: laneField(output, "SESSION"), tokens: values });
+};
+
 // ---------------------------------------------------------------- analyze mode
 if (opt.analyze) {
   const cwd = opt.cwd || process.cwd();
-  const cmd = `bash "${winPath(LANE_SH)}" --analyze ${JSON.stringify(opt.analyze)}${opt.effort ? ` --effort ${opt.effort}` : ""} --timeout ${opt.timeout}${opt.out ? ` --out "${winPath(opt.out)}"` : ""}`;
+  const analyzeSlug = opt.out ? slugFor(opt.out) : `analyze-${Date.now()}-${process.pid}`;
+  const analyzeStatus = path.join(statusDir, `${analyzeSlug}.status.json`);
+  writeStatus(analyzeStatus, { slug: analyzeSlug, mode: "analyze", spec: opt.analyze, phase: "running", last_message: opt.analyze }, true);
+  const cmd = `bash "${winPath(LANE_SH)}" --analyze ${JSON.stringify(opt.analyze)}${opt.effort ? ` --effort ${opt.effort}` : ""} --timeout ${opt.timeout} --status-file "${winPath(analyzeStatus)}"${opt.out ? ` --out "${winPath(opt.out)}"` : ""}`;
   const r = run(cmd, cwd, opt.timeout + 60);
-  process.stdout.write(r.out.endsWith("\n") ? r.out : r.out + "\n");
+  updateFromOutput(analyzeStatus, r.out);
+  const status = laneField(r.out, "STATUS") || (r.status === 0 ? "ran" : "failed");
+  writeStatus(analyzeStatus, { phase: `done ${status}`, exit: r.status });
+  if (opt.json) console.log(JSON.stringify({ status, status_file: analyzeStatus, session: laneField(r.out, "SESSION") || "unknown", output: r.out }, null, 2));
+  else process.stdout.write(r.out.endsWith("\n") ? r.out : r.out + "\n");
   process.exit(r.status);
 }
 
@@ -65,8 +110,13 @@ function parseVerification(section) {
 
 async function runSpec(specPath) {
   const specAbs = path.resolve(specPath);
-  const text = fs.readFileSync(specAbs, "utf8");
-  const report = { spec: specAbs, status: "unavailable", changes: [], verified: [], modelSaid: "", rounds: [], judgment: "", gaps: [], reason: "", session: "unknown", lane: "" };
+
+  const statusFile = statusFileFor(specAbs);
+  const report = { spec: specAbs, status: "unavailable", status_file: statusFile, changes: [], verified: [], modelSaid: "", rounds: [], judgment: "", gaps: [], reason: "", session: "unknown", lane: "" };
+  writeStatus(statusFile, { slug: slugFor(specAbs), mode: "implement", spec: specAbs, phase: "lint" }, true);
+  const finish = () => { writeStatus(statusFile, { phase: `done ${report.status}`, exit: statusExit(report.status), session: report.session, last_message: report.reason || report.modelSaid }); return report; };
+  let text;
+  try { text = fs.readFileSync(specAbs, "utf8"); } catch (error) { report.reason = error.message; return finish(); }
   const lint = lintSpec(text, process.cwd());
   const s = lint.sections;
   const worktree = (s.WORKTREE || "").trim() || process.cwd();
@@ -76,18 +126,20 @@ async function runSpec(specPath) {
   const fileArg = files.join(",");
   report.lane = `codex-implementer (relay model, effort: ${effort || "default"})`;
 
-  if (!lint.ok) { report.status = "refused"; report.reason = "spec incomplete — " + lint.problems.join("; "); return report; }
-  if (!fs.existsSync(worktree)) { report.status = "refused"; report.reason = `WORKTREE does not exist: ${worktree}`; return report; }
-  if (effort && !["low", "medium", "high", "xhigh"].includes(effort)) { report.status = "unavailable"; report.reason = `effort ${effort} not supported`; return report; }
+  if (!lint.ok) { report.status = "refused"; report.reason = "spec incomplete — " + lint.problems.join("; "); return finish(); }
+  if (!fs.existsSync(worktree)) { report.status = "refused"; report.reason = `WORKTREE does not exist: ${worktree}`; return finish(); }
+  if (effort && !["low", "medium", "high", "xhigh"].includes(effort)) { report.status = "unavailable"; report.reason = `effort ${effort} not supported`; return finish(); }
 
   const verifs = parseVerification(s.VERIFICATION || "");
-  const baseCmd = `bash "${winPath(LANE_SH)}" --files "${fileArg}"${effort ? ` --effort ${effort}` : ""}${model ? ` --model ${model}` : ""} --timeout ${opt.timeout}`;
+  const baseCmd = `bash "${winPath(LANE_SH)}" --files "${fileArg}"${effort ? ` --effort ${effort}` : ""}${model ? ` --model ${model}` : ""} --timeout ${opt.timeout} --status-file "${winPath(statusFile)}"`;
 
   let promptFile = specAbs;
   let resume = "";
   for (let round = 0; round <= opt.maxResumes; round++) {
+    writeStatus(statusFile, { phase: round === 0 ? "running" : `resume ${round}/${opt.maxResumes}`, last_message: round === 0 ? "codex lane" : `resume ${round}/${opt.maxResumes}` });
     const cmd = `${baseCmd} --spec "${winPath(promptFile)}"${resume ? ` --resume ${resume}` : ""}`;
     const r = run(cmd, worktree, opt.timeout + 120);
+    updateFromOutput(statusFile, r.out);
     const st = laneField(r.out, "STATUS");
     const tokens = laneField(r.out, "TOKENS");
     report.session = laneField(r.out, "SESSION") || report.session;
@@ -98,7 +150,7 @@ async function runSpec(specPath) {
       report.status = st === "refused" ? "refused" : st === "timeout" ? "timeout" : "unavailable";
       report.reason = laneField(r.out, "REASON") || tail(r.out, 6);
       if (st === "refused" && finalMsg) report.reason += " — " + finalMsg.slice(0, 300);
-      return report;
+      return finish();
     }
     const changedBlock = (r.out.split("----- changed by this run -----")[1] || "").split(/\n(?=[A-Z ]+:)/)[0];
     report.changes = changedBlock.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !/^(SCOPE VIOLATION|WROTE OUTSIDE|STATUS|SESSION|TOKENS)/.test(l));
@@ -110,7 +162,9 @@ async function runSpec(specPath) {
     // independent verification
     report.verified = [];
     let allPass = true;
+    writeStatus(statusFile, { phase: "verifying" });
     for (const v of verifs) {
+      writeStatus(statusFile, { phase: "verifying", last_message: v.cmd });
       const vr = run(v.cmd, worktree, 900);
       const pass = vr.status === 0;
       allPass = allPass && pass;
@@ -135,7 +189,7 @@ async function runSpec(specPath) {
   const allPass = report.verified.length > 0 && report.verified.every((v) => v.exit === 0);
   report.status = allPass && report.gaps.length === 0 ? "complete" : "partial";
   if (!verifs.length) { report.status = "partial"; report.gaps.push("no runnable VERIFICATION command in spec"); }
-  return report;
+  return finish();
 }
 
 function format(r) {
@@ -166,13 +220,24 @@ if (specs.length === 1) {
   console.log(opt.json ? JSON.stringify(r, null, 2) : format(r));
   process.exit(r.status === "complete" ? 0 : r.status === "partial" ? 5 : 2);
 } else {
-  // batch: each spec in its own child process so they run concurrently; reports come back in order
-  const children = specs.map((sp) => new Promise((res) => {
-    const c = spawn(process.execPath, [fileURLToPath(import.meta.url), "--spec", sp, "--max-resumes", String(opt.maxResumes), "--timeout", String(opt.timeout), "--json"], { encoding: "utf8", env: process.env });
-    let out = ""; c.stdout.on("data", (d) => (out += d)); c.stderr.on("data", () => {});
-    c.on("close", (code) => { try { res({ code, r: JSON.parse(out) }); } catch { res({ code, r: { spec: sp, status: "unavailable", reason: tail(out, 5), changes: [], verified: [], rounds: [], gaps: [], lane: "?", session: "unknown", modelSaid: "" } }); } });
-  }));
-  const results = await Promise.all(children);
+  // batch: bounded child-process workers preserve input order while limiting relay pressure
+  const runChild = (sp) => new Promise((res) => {
+    const childArgs = [fileURLToPath(import.meta.url), "--spec", sp, "--max-resumes", String(opt.maxResumes), "--timeout", String(opt.timeout), "--lockfile-max-lines", String(opt.lockMax), "--status-dir", statusDir, "--no-watch", "--json"];
+    const c = spawn(process.execPath, childArgs, { encoding: "utf8", env: process.env });
+    let out = ""; c.stdout.on("data", (d) => (out += d)); c.stderr.on("data", (data) => process.stderr.write(data));
+    c.on("error", (error) => { out += error.message; });
+    c.on("close", (code) => { try { res({ code, r: JSON.parse(out) }); } catch { res({ code, r: { spec: sp, status: "unavailable", status_file: statusFileFor(path.resolve(sp)), reason: tail(out, 5), changes: [], verified: [], rounds: [], gaps: [], lane: "?", session: "unknown", modelSaid: "" } }); } });
+  });
+  const results = Array(specs.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(opt.concurrency, specs.length) }, async () => {
+    while (true) {
+      const index = next++;
+      if (index >= specs.length) return;
+      results[index] = await runChild(specs[index]);
+    }
+  });
+  await Promise.all(workers);
   if (opt.json) console.log(JSON.stringify(results.map((x) => x.r), null, 2));
   else console.log(results.map((x) => format(x.r)).join("\n\n"));
   process.exit(results.every((x) => x.code === 0) ? 0 : 5);

@@ -111,3 +111,26 @@ test("WORKTREE line selects the cwd", () => {
   assert.equal(r.json.status, "refused");
   assert.match(r.json.reason, /WORKTREE/);
 });
+
+test("batch concurrency cap keeps only one stub lane active", () => {
+  fs.writeFileSync(path.join(repo, "add.mjs"), "export const add = (a, b) => a + b;\n");
+  const overlapLog = path.join(root, "overlap.json");
+  fs.writeFileSync(overlapLog, JSON.stringify({ active: 0, max: 0, runs: 0 }));
+  const overlapStub = path.join(root, "overlap-stub.sh");
+  fs.writeFileSync(overlapStub, `#!/usr/bin/env bash
+node -e '
+const fs=require("fs");const p=process.argv[1];const state=JSON.parse(fs.readFileSync(p,"utf8"));state.active++;state.runs++;state.max=Math.max(state.max,state.active);fs.writeFileSync(p,JSON.stringify(state));Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,120);state.active--;fs.writeFileSync(p,JSON.stringify(state));
+' "${overlapLog.replace(/\\/g, "/")}"
+printf '%s\\n' '===== CODEX FINAL MESSAGE (stub) =====' 'done' '===== END =====' 'SESSION: stub-session' 'TOKENS: in=1 cached=0 out=1' 'STATUS: ran'
+`);
+  const specs = ["one", "two", "three"].map((name) => {
+    const p = path.join(root, `batch-${name}.md`);
+    fs.writeFileSync(p, specText());
+    return p;
+  });
+  const statusDir = path.join(root, "batch-status");
+  const r = spawnSync(process.execPath, [driver, "--batch", ...specs, "--concurrency", "1", "--status-dir", statusDir, "--timeout", "60", "--json"], { cwd: repo, encoding: "utf8", env: { ...process.env, LANE_RUN_LANE_SH: overlapStub, LLM_USAGE_LOG: path.join(root, "u-batch.jsonl") } });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(JSON.parse(fs.readFileSync(overlapLog, "utf8")).max, 1);
+  assert.equal(JSON.parse(r.stdout).length, 3);
+});

@@ -83,6 +83,10 @@ node ~/.claude/plugins/…/delegating-to-external-llm/scripts/setup.mjs   # 或�
 
 然后在任意仓库打开 Claude Code，像平时一样描述任务。不用多说一个字，插件的钩子会让每个编码任务走通道。
 
+### 看进度
+
+每次后台启动通道，都必须报告启动情况并附上 `lane-run.mjs` 打印的完整 `WATCH:` 行；在终端执行该前缀后面的命令即可看进度。该命令运行 `lane-status.mjs --watch`，用 `--dir` 指向本次启动的状态目录，每两秒刷新一次。在 Claude Code 中使用 `/delegating-to-external-llm:status` 可查看一次阶段、耗时、token 和最后消息的原样表格（保持相同的状态目录环境设置）。
+
 ## 你实际会看到什么
 
 通道返回固定格式、不超过 40 行的报告（这份来自 supermemory 实测）：
@@ -232,6 +236,8 @@ OBJECTIVE / CHANGES / VERIFIED（通道自己重跑，计数原样）/ MODEL SAI
 
 ### 并行任务：一个通道一个 worktree
 
+默认最多 **2 个并发通道**（通过 `--batch --concurrency` 或环境变量 `LLM_LANE_CONCURRENCY` 调整），分析通道也计入，因此单独启动的通道也要统一控制并发；此前四个 codex 会话同时运行导致中转超时。
+
 ```
 bash scripts/lane-worktree.sh create <slug>   # 建 .lanes/<slug>，分支 lane/<slug>；路径写进 spec 的 WORKTREE:
 bash scripts/lane-worktree.sh check  <slug>   # 干跑合并，列出冲突文件
@@ -250,7 +256,7 @@ bash scripts/lane-worktree.sh cleanup
 插件启用时三个钩子始终生效（`LLM_DELEGATION=0` 可让单个会话静默）：
 
 - `delegation-context.mjs`（`SessionStart`、`UserPromptSubmit`）——每轮注入提醒；会话开始时若中转未配置或缺 codex 会额外提示。
-- `block-direct-edits.mjs`（`PreToolUse`）——拦截主会话对仓库文件的 Edit / Write / NotebookEdit，除非当前项目存在新鲜的外部模型输出文件。
+- `block-direct-edits.mjs`（`PreToolUse`）——现在仅限制 git 工作树内的代码：主会话执行 Edit / Write / NotebookEdit 需要当前项目的新鲜外部模型输出证据，git 工作树外的路径以及文档/数据扩展名文件无需证据即可编辑。
 
 详见 [hooks/README.md](hooks/README.md)。
 

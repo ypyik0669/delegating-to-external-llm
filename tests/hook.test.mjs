@@ -6,15 +6,30 @@ import path from "node:path";
 import { decide } from "../hooks/block-direct-edits.mjs";
 
 const repo = path.join(os.tmpdir(), "dtel-hook-fakerepo");
+fs.mkdirSync(path.join(repo, ".git"), { recursive: true });
 const slug = repo.replace(/[^A-Za-z0-9]/g, "-");
 const scratch = path.join(os.tmpdir(), "claude", slug);
 const otherScratch = path.join(os.tmpdir(), "claude", slug + "-other");
+const noGit = fs.mkdtempSync(path.join(os.tmpdir(), "dtel-hook-nogit-"));
 const on = {};
 const off = { LLM_DELEGATION: "0" };
 const edit = (file_path, cwd = repo) => ({ tool_name: "Edit", cwd, tool_input: { file_path } });
 
 test.beforeEach(() => { fs.rmSync(scratch, { recursive: true, force: true }); fs.rmSync(otherScratch, { recursive: true, force: true }); });
-test.after(() => { fs.rmSync(scratch, { recursive: true, force: true }); fs.rmSync(otherScratch, { recursive: true, force: true }); });
+test.after(() => { fs.rmSync(scratch, { recursive: true, force: true }); fs.rmSync(otherScratch, { recursive: true, force: true }); fs.rmSync(noGit, { recursive: true, force: true }); fs.rmSync(repo, { recursive: true, force: true }); });
+
+test("documentation outside a git work tree → allow", () => {
+  assert.equal(decide(edit(path.join(noGit, "notes.md"), noGit), on), null);
+});
+test("code outside a git work tree → allow", () => {
+  assert.equal(decide(edit(path.join(noGit, "src.ts"), noGit), on), null);
+});
+test("documentation inside a git work tree → allow", () => {
+  assert.equal(decide(edit(path.join(repo, "notes.md")), on), null);
+});
+test("code inside a git work tree without evidence → block", () => {
+  assert.equal(decide(edit(path.join(repo, "src.ts")), on)?.decision, "block");
+});
 
 test("delegation off → allow", () => {
   assert.equal(decide(edit(path.join(repo, "src", "a.ts")), off), null);

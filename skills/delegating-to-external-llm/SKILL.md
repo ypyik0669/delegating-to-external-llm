@@ -30,6 +30,7 @@ Every background notification re-enters your whole context. Delegation is cheap 
 2. `/effort low` for orchestration turns; raise it only for a spec you find hard to approve or a verdict that deserves it.
 3. Prefer **one** `lane-run.mjs --batch` call over several agents, and run it with the Bash tool's `run_in_background: true`: the harness wakes you exactly once when it finishes. **Never poll with `sleep`** — every poll is a full-context turn; a 40-minute lane polled every 9 minutes cost 2.4M cached tokens in testing.
 4. Never paste diffs, briefs, or reports back into the conversation. Cite paths and counts.
+5. Report every background lane launch to the user together with the exact `WATCH:` line that `lane-run.mjs` prints. There is no other way for the user to see progress while it runs; never silently launch it or poll on their behalf.
 
 ## The workflow
 
@@ -74,6 +75,8 @@ Call it from Bash directly. Use the `codex-implementer` agent only to keep a ver
 Fallback: `relay-implementer` (chat completions applied verbatim, optional four-phase trail) when codex is `unavailable` or a task has failed twice.
 
 ### 4. Parallelism — one worktree per lane
+
+Default to **2 concurrent lanes**, including analyze lanes: four concurrent codex sessions timed out the relay. `lane-run.mjs --batch` enforces a cap of 2 by default; override it with `--concurrency` or the `LLM_LANE_CONCURRENCY` environment variable (the flag wins). Analyze lanes count toward the same budget, but separate launches are not globally capped: the architect must coordinate them with implementation lanes.
 
 Decompose by domain, not by verb. File sets must be disjoint; **hotspot files** (routes, config, registries, dependency manifests, shared types) belong to exactly one spec. Then:
 

@@ -83,6 +83,10 @@ node ~/.claude/plugins/…/delegating-to-external-llm/scripts/setup.mjs   # or: 
 
 Then open Claude Code in any repo and describe a task the way you always did. Nothing else to say — the plugin's hook makes every coding task go through the lanes.
 
+### Watching progress
+
+Every background launch must be reported with the exact `WATCH:` line printed by `lane-run.mjs`; run the command after that prefix in your terminal to see progress. It runs `lane-status.mjs --watch` with `--dir` pointing to that launch's status directory and refreshes every two seconds. Use `/delegating-to-external-llm:status` in Claude Code for a single verbatim table of phase, elapsed time, tokens and last message (with the same status-directory environment).
+
 ## What you actually see
 
 A lane returns a fixed, ≤ 40-line report (this one is from the supermemory run):
@@ -232,6 +236,8 @@ An empty diff is `refused`, never `complete`. A missing CLI or dead relay is `un
 
 ### Parallel tasks — one worktree per lane
 
+The default is **2 concurrent lanes** (`--batch --concurrency`, or env `LLM_LANE_CONCURRENCY`); analyze lanes count too, so coordinate separate launches within that budget—four concurrent codex sessions timed out the relay.
+
 ```
 bash scripts/lane-worktree.sh create <slug>   # .lanes/<slug> on branch lane/<slug>; put the path in the spec as WORKTREE:
 bash scripts/lane-worktree.sh check  <slug>   # dry-run merge, lists conflicting files
@@ -250,7 +256,7 @@ Every lane call appends to `~/.claude/llm-usage.jsonl`. `node scripts/usage.mjs 
 Three plugin hooks, active whenever the plugin is enabled (`LLM_DELEGATION=0` silences them for one session):
 
 - `delegation-context.mjs` (`SessionStart`, `UserPromptSubmit`) — injects the per-turn reminder; at session start also warns if the relay is unconfigured or codex is missing.
-- `block-direct-edits.mjs` (`PreToolUse`) — blocks Edit / Write / NotebookEdit on repository files from the main session unless a fresh external-model output exists for the current project.
+- `block-direct-edits.mjs` (`PreToolUse`) — now gates only code inside git work trees: Edit / Write / NotebookEdit from the main session requires fresh external-model output for the current project, while paths outside git work trees and documentation/data extensions are allowed without evidence.
 
 See [hooks/README.md](hooks/README.md).
 

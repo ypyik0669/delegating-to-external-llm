@@ -14,7 +14,7 @@ The skill makes the architect *want* to delegate. This hook makes it *unable* to
 
 `block-direct-edits.mjs` is a PreToolUse hook for Edit / Write / NotebookEdit, registered automatically by `hooks/hooks.json` when the plugin is loaded (the command uses `${CLAUDE_PLUGIN_ROOT}`, so it works on Windows without `%USERPROFILE%` tricks).
 
-When delegation mode is on it blocks writes to files under the current repo unless a fresh (< 30 min) external-model output file (`*.llm-output.*`, written by `llm.mjs --out`) exists under the **current project's** scratch root (`%TEMP%/claude/<project-slug>/`). The relay-implementer agent always produces one before applying code; the main agent never does. The codex lane edits files through its own process and never hits this hook.
+When delegation mode is on it blocks writes to code files inside a detected git work tree unless a fresh (< 30 min) external-model output file (`*.llm-output.*`, written by `llm.mjs --out`) exists under the **current project's** scratch root (`%TEMP%/claude/<project-slug>/`). Paths outside git work trees and documentation/data files (`.md`, `.mdx`, `.txt`, `.rst`, `.adoc`, `.csv`, `.json`, `.yaml`, `.yml`, `.toml`, `.ini`, `.env.example`, `.svg`, `.png`, `.jpg`, `.gif`, `.pdf`) are allowed without evidence. The relay-implementer agent always produces one before applying code; the main agent never does. The codex lane edits files through its own process and never hits this hook.
 
 When delegation mode is off the hook exits immediately and does nothing.
 

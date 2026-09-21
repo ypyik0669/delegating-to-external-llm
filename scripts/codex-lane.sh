@@ -12,6 +12,7 @@
 # Usage:
 #   bash codex-lane.sh --spec <spec-file> [--files a.ts,b.ts] [--effort low|medium|high|xhigh]
 #                      [--access workspace|workspace-net|yolo] [--model <slug>] [--timeout 600] [--resume <thread-id>]
+#                      [--status-file <path>]
 #   bash codex-lane.sh --analyze "<one-line task>" [--effort medium] [--out brief.md]
 #   bash codex-lane.sh --review [--base main] [--spec goal.md] [--effort medium] [--out review.md]
 #
@@ -79,7 +80,7 @@ resolve_codex_home() {
   export CODEX_HOME="$selected"
 }
 
-MODE=implement; SPEC=""; TASK=""; BASE=""; OUT=""
+MODE=implement; SPEC=""; TASK=""; BASE=""; OUT=""; STATUS_FILE=""
 MODEL="${LLM_MODEL:-$(codex_config_model)}"; EFFORT=""; TIMEOUT=600; ACCESS="$LLM_CODEX_ACCESS"; FILES=""; RESUME=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -94,6 +95,7 @@ while [ $# -gt 0 ]; do
     --access) ACCESS="$2"; shift 2 ;;
     --files) FILES="$2"; shift 2 ;;
     --resume) RESUME="$2"; shift 2 ;;
+    --status-file) STATUS_FILE="$2"; shift 2 ;;
     *) echo "codex-lane: unknown arg $1" >&2; exit 1 ;;
   esac
 done
@@ -103,6 +105,48 @@ case "$ACCESS" in workspace|workspace-net|yolo) ;; *) echo "codex-lane: --access
 # analyze/review are read-only by contract, not by sandbox: codex's read-only sandbox blocks every shell
 # command on Windows, so they run at the user's access level and any write is reverted afterwards.
 READONLY_MODE=0; [ "$MODE" != implement ] && READONLY_MODE=1
+
+STATUS_EVENTS_FILE=""
+STATUS_NATIVE_FILE="$STATUS_FILE"
+STATUS_SLUG=""
+STATUS_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+if [ -n "$STATUS_FILE" ]; then
+  if command -v cygpath >/dev/null 2>&1; then
+    STATUS_NATIVE_FILE=$(cygpath -m "$STATUS_FILE")
+    STATUS_FILE=$(cygpath -u "$STATUS_FILE")
+  fi
+  STATUS_SLUG=$(basename "$STATUS_FILE")
+  STATUS_SLUG=${STATUS_SLUG%.status.json}
+  if [ "$STATUS_SLUG" = "$(basename "$STATUS_FILE")" ]; then
+    STATUS_EVENTS_FILE="${STATUS_FILE}.events.jsonl"
+  else
+    STATUS_EVENTS_FILE="$(dirname "$STATUS_FILE")/${STATUS_SLUG}.events.jsonl"
+  fi
+fi
+
+status_write() {
+  [ -n "$STATUS_FILE" ] || return 0
+  node -e '
+const fs=require("fs"),path=require("path");
+const [file,phase,exitValue,slug,mode,spec,started,session,tin,tcached,tout,message]=process.argv.slice(1);
+try {
+  let current={}; try { current=JSON.parse(fs.readFileSync(file,"utf8"))||{}; } catch {}
+  if(!phase && String(current.phase||"").startsWith("done ")) current={};
+  const now=new Date();
+  const startedAt=current.started_at||started||now.toISOString();
+  const elapsed=Math.max(0,(now.getTime()-Date.parse(startedAt))/1000);
+  current={slug:slug||current.slug||"",mode:mode||current.mode||"",spec:current.spec||spec||"",phase:phase||current.phase||"running",started_at:startedAt,updated_at:now.toISOString(),elapsed_s:Math.round(elapsed*10)/10,tokens:{in:Number(tin||current.tokens?.in||0),cached:Number(tcached||current.tokens?.cached||0),out:Number(tout||current.tokens?.out||0)},session:session||current.session||"unknown",last_message:(message||current.last_message||"").slice(0,200),exit:exitValue===""?(current.exit??null):Number(exitValue)};
+  fs.mkdirSync(path.dirname(file),{recursive:true});
+  const tmp=`${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp,JSON.stringify(current)+"\n","utf8");
+  try { fs.renameSync(tmp,file); } catch (error) { try { fs.rmSync(tmp,{force:true}); } catch {} throw error; }
+} catch (error) { process.stderr.write(`lane status write failed: ${error.message}\n`); }
+' "$STATUS_NATIVE_FILE" "$1" "${2:-}" "$STATUS_SLUG" "$MODE" "$SPEC" "$STATUS_STARTED_AT" "${SESSION:-unknown}" "${TOK_IN:-0}" "${TOK_CACHED:-0}" "${TOK_OUT:-0}" "${3:-}" >/dev/null || true
+}
+
+if [ -n "$STATUS_FILE" ]; then
+  status_write "" ""
+fi
 
 log_usage() { # status tokens_in tokens_cached tokens_out session
   local T1; T1=$(date +%s%3N 2>/dev/null || date +%s000)
@@ -114,18 +158,18 @@ log_usage() { # status tokens_in tokens_cached tokens_out session
 
 # --- preflight -------------------------------------------------------------
 if [ "${EVAL_CODEX_DISABLED:-}" = "1" ]; then
-  echo "STATUS: unavailable"; echo "REASON: codex disabled by EVAL_CODEX_DISABLED=1"; log_usage unavailable; exit 2
+  echo "STATUS: unavailable"; echo "REASON: codex disabled by EVAL_CODEX_DISABLED=1"; status_write "done unavailable" 2; log_usage unavailable; exit 2
 fi
 if ! command -v codex >/dev/null 2>&1; then
-  echo "STATUS: unavailable"; echo "REASON: codex not found on PATH"; log_usage unavailable; exit 2
+  echo "STATUS: unavailable"; echo "REASON: codex not found on PATH"; status_write "done unavailable" 2; log_usage unavailable; exit 2
 fi
 if [ -z "$LLM_BASE" ] || [ -z "$LLM_KEY" ]; then
-  echo "STATUS: unavailable"; echo "REASON: LLM_BASE / LLM_KEY missing — run scripts/setup.mjs"; log_usage unavailable; exit 2
+  echo "STATUS: unavailable"; echo "REASON: LLM_BASE / LLM_KEY missing — run scripts/setup.mjs"; status_write "done unavailable" 2; log_usage unavailable; exit 2
 fi
 CODEX_VERSION=$(codex --version 2>/dev/null | head -1)
 BASE_URL="${LLM_BASE%/}/v1"
 # Only private mode creates and seeds a home. Other modes use existing homes as-is.
-resolve_codex_home || { echo "STATUS: unavailable"; log_usage unavailable; exit 3; }
+resolve_codex_home || { echo "STATUS: unavailable"; status_write "done unavailable" 3; log_usage unavailable; exit 3; }
 
 # --- working root (Windows-safe) --------------------------------------------
 if pwd -W >/dev/null 2>&1; then ROOT=$(pwd -W); else ROOT=$(pwd); fi
@@ -234,28 +278,55 @@ COMMON_ARGS=(
 [ -n "$EFFORT" ] && COMMON_ARGS+=(-c "model_reasoning_effort=\"$EFFORT\"")
 
 set +e
+export LLM_RELAY_KEY="$LLM_KEY"
+
+capture_codex() {
+  if [ -n "$STATUS_FILE" ]; then
+    "$@" 2>"$ERRLOG" | tee -a "$EVENTS" "$STATUS_EVENTS_FILE" | node -e '
+const fs=require("fs"),path=require("path");
+const [statusFile]=process.argv.slice(1);
+let status={}; try { status=JSON.parse(fs.readFileSync(statusFile,"utf8"))||{}; } catch {}
+const clip=(value)=>String(value||"").replace(/\s+/g," ").trim().slice(0,200);
+const atomic=()=>{ try { fs.mkdirSync(path.dirname(statusFile),{recursive:true}); const tmp=`${statusFile}.${process.pid}.tmp`; fs.writeFileSync(tmp,JSON.stringify(status)+"\n","utf8"); try { fs.renameSync(tmp,statusFile); } catch (error) { try { fs.rmSync(tmp,{force:true}); } catch {} throw error; } } catch (error) { process.stderr.write(`lane status write failed: ${error.message}\n`); } };
+const update=(line)=>{
+  let event; try { event=JSON.parse(line); } catch { return; }
+  const now=new Date(); status.updated_at=now.toISOString(); status.elapsed_s=Math.round(Math.max(0,(now.getTime()-Date.parse(status.started_at||now.toISOString()))/1000)*10)/10;
+  if(event.thread_id) status.session=event.thread_id;
+  const usage=event.usage||event.info?.usage||event.item?.usage; if(usage) status.tokens={in:Number(usage.input_tokens??status.tokens?.in??0),cached:Number(usage.cached_input_tokens??status.tokens?.cached??0),out:Number(usage.output_tokens??status.tokens?.out??0)};
+  const item=event.item||{}; const text=item.text||event.text; const command=item.command||item.cmd||event.command;
+  if(item.type==="agent_message"&&text) status.last_message=clip(text); else if(command) status.last_message=clip(command); atomic();
+};
+let carry=""; process.stdin.setEncoding("utf8"); process.stdin.on("data",chunk=>{ carry+=chunk; const lines=carry.split(/\r?\n/); carry=lines.pop(); for(const line of lines) if(line) update(line); }); process.stdin.on("end",()=>{ if(carry) update(carry); });
+' "$STATUS_NATIVE_FILE"
+    return "${PIPESTATUS[0]}"
+  fi
+  "$@" >"$EVENTS" 2>"$ERRLOG"
+}
+
 case "$MODE" in
   implement)
     if [ -z "$RESUME" ]; then
-      LLM_RELAY_KEY="$LLM_KEY" ${T:+$T "$TIMEOUT"} codex exec "${COMMON_ARGS[@]}" --cd "$ROOT" - < "$PROMPT" >"$EVENTS" 2>"$ERRLOG"
+      capture_codex ${T:+$T "$TIMEOUT"} codex exec "${COMMON_ARGS[@]}" --cd "$ROOT" - < "$PROMPT"
     else
-      LLM_RELAY_KEY="$LLM_KEY" ${T:+$T "$TIMEOUT"} codex exec resume "${COMMON_ARGS[@]}" "$RESUME" - < "$PROMPT" >"$EVENTS" 2>"$ERRLOG"
+      capture_codex ${T:+$T "$TIMEOUT"} codex exec resume "${COMMON_ARGS[@]}" "$RESUME" - < "$PROMPT"
     fi ;;
   analyze)
-    LLM_RELAY_KEY="$LLM_KEY" ${T:+$T "$TIMEOUT"} codex exec "${COMMON_ARGS[@]}" --cd "$ROOT" - < "$PROMPT" >"$EVENTS" 2>"$ERRLOG" ;;
+    capture_codex ${T:+$T "$TIMEOUT"} codex exec "${COMMON_ARGS[@]}" --cd "$ROOT" - < "$PROMPT" ;;
   review)
-    LLM_RELAY_KEY="$LLM_KEY" ${T:+$T "$TIMEOUT"} codex exec "${COMMON_ARGS[@]}" --cd "$ROOT" - < "$PROMPT" >"$EVENTS" 2>"$ERRLOG" ;;
+    capture_codex ${T:+$T "$TIMEOUT"} codex exec "${COMMON_ARGS[@]}" --cd "$ROOT" - < "$PROMPT" 2>"$ERRLOG" ;;
 esac
 RC=$?
 
 # --- parse events -----------------------------------------------------------
-SESSION=$(grep -o '"thread_id":"[^"]*"' "$EVENTS" | head -1 | cut -d'"' -f4)
-[ -z "$SESSION" ] && [ -n "$RESUME" ] && SESSION="$RESUME"
-[ -z "$SESSION" ] && SESSION="unknown"
-USAGE_LINE=$(grep '"type":"turn.completed"' "$EVENTS" | tail -1)
-TOK_IN=$(printf '%s' "$USAGE_LINE" | grep -o '"input_tokens":[0-9]*' | head -1 | cut -d: -f2)
-TOK_CACHED=$(printf '%s' "$USAGE_LINE" | grep -o '"cached_input_tokens":[0-9]*' | head -1 | cut -d: -f2)
-TOK_OUT=$(printf '%s' "$USAGE_LINE" | grep -o '"output_tokens":[0-9]*' | head -1 | cut -d: -f2)
+read -r SESSION TOK_IN TOK_CACHED TOK_OUT < <(node -e '
+const fs=require("fs"); let session=process.argv[2]||"unknown",usage={};
+for(const line of fs.readFileSync(process.argv[1],"utf8").split(/\r?\n/)){
+  try { const event=JSON.parse(line); if(event.thread_id) session=event.thread_id;
+    if(event.type==="turn.completed") usage=event.usage||{};
+  } catch {}
+}
+console.log([session,usage.input_tokens||0,usage.cached_input_tokens||0,usage.output_tokens||0].join(" "));
+' "$EVENTS" "$RESUME")
 EVENT_ERRORS=$(grep '"type":"error"' "$EVENTS" | grep -o '"message":"[^"]*"' | cut -d'"' -f4 | grep -v -i 'skills context budget' | head -5)
 # `--output-last-message` is not honoured on `exec resume`/`review`; fall back to the last agent_message event.
 if [ ! -s "$FINAL" ]; then
@@ -272,7 +343,7 @@ echo "SESSION: $SESSION"
 echo "TOKENS: in=${TOK_IN:-0} cached=${TOK_CACHED:-0} out=${TOK_OUT:-0}"
 
 if [ "$RC" -eq 124 ] || [ "$RC" -eq 137 ]; then
-  echo "STATUS: timeout"; echo "REASON: wall clock of ${TIMEOUT}s exceeded"
+  echo "STATUS: timeout"; echo "REASON: wall clock of ${TIMEOUT}s exceeded"; status_write "done timeout" "$RC"
   log_usage timeout "$TOK_IN" "$TOK_CACHED" "$TOK_OUT" "$SESSION"; exit 4
 fi
 
@@ -281,12 +352,14 @@ ERRTXT=$( { grep -v -E "$NOISE" "$ERRLOG"; printf '%s\n' "$EVENT_ERRORS"; } | gr
 if [ "$RC" -eq 0 ] && printf '%s' "$ERRTXT" | grep -q -i -E 'not supported when using|requires a newer version|not logged in|unauthori[sz]ed|unexpected status|invalid.*api key'; then RC=99; fi
 if [ "$RC" -ne 0 ]; then
   if printf '%s' "$ERRTXT" | grep -q -i -E 'not supported|requires a newer version|not logged in|unauthori[sz]ed|auth|login|unexpected status|connection|overloaded|model.*(unavailable|not found)'; then
-    echo "STATUS: unavailable"
+    FAILURE_STATUS=unavailable
   else
-    echo "STATUS: failed"
+    FAILURE_STATUS=failed
   fi
+  echo "STATUS: $FAILURE_STATUS"
   echo "REASON: codex exit $RC"
   [ -n "$ERRTXT" ] && printf '%s\n' "$ERRTXT"
+  status_write "done $FAILURE_STATUS" "$RC"
   log_usage unavailable "$TOK_IN" "$TOK_CACHED" "$TOK_OUT" "$SESSION"; exit 2
 fi
 
@@ -300,8 +373,8 @@ if [ "$READONLY_MODE" -eq 1 ]; then
       [ -n "$STRAYP" ] && { git checkout -q -- $STRAYP 2>/dev/null; git clean -fq -- $STRAYP 2>/dev/null; }
     fi
   fi
-  if [ ! -s "$FINAL" ]; then echo "STATUS: refused"; echo "REASON: model returned no message"; log_usage refused "$TOK_IN" "$TOK_CACHED" "$TOK_OUT" "$SESSION"; exit 3; fi
-  echo "STATUS: ran"; log_usage ran "$TOK_IN" "$TOK_CACHED" "$TOK_OUT" "$SESSION"; exit 0
+  if [ ! -s "$FINAL" ]; then echo "STATUS: refused"; echo "REASON: model returned no message"; status_write "done refused" 3; log_usage refused "$TOK_IN" "$TOK_CACHED" "$TOK_OUT" "$SESSION"; exit 3; fi
+  echo "STATUS: ran"; status_write "done ran" 0; log_usage ran "$TOK_IN" "$TOK_CACHED" "$TOK_OUT" "$SESSION"; exit 0
 fi
 
 EXIT=0
@@ -324,6 +397,7 @@ if [ "$have_git" -eq 1 ]; then
   if [ "$BEFORE" = "$AFTER" ]; then
     echo "STATUS: refused"
     echo "REASON: codex exited 0 but the working tree did not change (see final message above)"
+    status_write "done refused" 3
     log_usage refused "$TOK_IN" "$TOK_CACHED" "$TOK_OUT" "$SESSION"; exit 3
   fi
   NEW_PATHS=$(comm -13 <(printf '%s\n' "$BEFORE_PATHS") <(changed_paths))
@@ -340,5 +414,6 @@ if [ "$have_git" -eq 1 ]; then
 fi
 
 echo "STATUS: ran"
+status_write "done ran" "$EXIT"
 log_usage ran "$TOK_IN" "$TOK_CACHED" "$TOK_OUT" "$SESSION"
 exit $EXIT
