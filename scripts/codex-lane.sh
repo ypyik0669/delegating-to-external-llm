@@ -6,8 +6,8 @@
 #   (read-only modes run at the user's access level — codex's read-only sandbox cannot run commands on
 #    Windows — and every write the model makes is reverted and reported as STRAY WRITES.)
 # The model is served by the OpenAI-compatible relay in ~/.claude/llm-relay.env (LLM_BASE, LLM_KEY,
-# LLM_MODEL, LLM_CODEX_ACCESS). codex runs with a private CODEX_HOME (<plugin>/codex-home) so the
-# user's ~/.codex — MCP servers, AGENTS.md, profiles — never loads into a lane.
+# LLM_MODEL, LLM_CODEX_ACCESS, LLM_CODEX_HOME). By default codex runs with a private
+# CODEX_HOME; shared or an explicit path loads the user's selected codex home.
 #
 # Usage:
 #   bash codex-lane.sh --spec <spec-file> [--files a.ts,b.ts] [--effort low|medium|high|xhigh]
@@ -21,7 +21,7 @@
 #   SCOPE VIOLATION: <paths>              (implement mode, --files given, other files changed)
 #   WROTE OUTSIDE WORKTREE: <paths>       (implement mode inside a linked worktree; the main tree changed — moved back)
 #   STATUS: ran | refused | timeout | unavailable | failed
-# Exit codes: 0 ran · 5 ran with scope violation · 3 refused · 4 timeout · 2 unavailable/failed · 1 usage error.
+# Exit codes: 0 ran · 5 ran with scope violation · 3 refused/home not found · 4 timeout · 2 unavailable/failed · 1 usage error.
 #
 # Access levels (LLM_CODEX_ACCESS or --access): workspace (default, repo-only, no network) ·
 # workspace-net (repo + network) · yolo (--dangerously-bypass-approvals-and-sandbox).
@@ -38,12 +38,12 @@ if [ -f "$ENVF" ]; then
   while IFS='=' read -r k v; do
     case "$k" in ''|\#*) continue ;; esac
     k=$(printf '%s' "$k" | tr -d '[:space:]'); v=$(printf '%s' "$v" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    case "$k" in LLM_BASE|LLM_KEY|LLM_MODEL|LLM_CODEX_ACCESS) [ -z "${!k:-}" ] && eval "$k=\"\$v\"" ;; esac
+    case "$k" in LLM_BASE|LLM_KEY|LLM_MODEL|LLM_CODEX_ACCESS|LLM_CODEX_HOME) [ -z "${!k:-}" ] && eval "$k=\"\$v\"" ;; esac
   done < "$ENVF"
 fi
 LLM_BASE="${LLM_BASE:-${EVAL_LLM_BASE:-}}"; LLM_KEY="${LLM_KEY:-${EVAL_LLM_KEY:-}}"; LLM_CODEX_ACCESS="${LLM_CODEX_ACCESS:-${EVAL_LLM_CODEX_ACCESS:-workspace}}"
 
-# Read the user's config before switching to the lane's private CODEX_HOME.
+# Read the user's config before switching to the lane's selected CODEX_HOME.
 codex_config_model() {
   local config="${CODEX_HOME:-$HOME/.codex}/config.toml"
   [ -r "$config" ] || return 0
@@ -55,6 +55,28 @@ codex_config_model() {
       print; exit
     }
   ' "$config"
+}
+
+HOME_LABEL="${LANE_CODEX_HOME:-${LLM_CODEX_HOME:-private}}"
+resolve_codex_home() {
+  HOME_LABEL="${LANE_CODEX_HOME:-${LLM_CODEX_HOME:-private}}"
+  local selected
+  case "$HOME_LABEL" in
+    private)
+      export CODEX_HOME="$HOME/.claude/llm-codex-home"
+      mkdir -p "$CODEX_HOME"
+      [ -f "$CODEX_HOME/config.toml" ] || cp "$PLUGIN/codex-home/config.toml" "$CODEX_HOME/config.toml"
+      return ;;
+    shared) selected="${CODEX_HOME:-$HOME/.codex}" ;;
+    *) selected="$HOME_LABEL" ;;
+  esac
+  # Expand a literal ~/ from the env file without evaluating shell expressions.
+  case "$selected" in '~') selected="$HOME" ;; '~/'*) selected="$HOME/${selected:2}" ;; esac
+  if [ ! -d "$selected" ]; then
+    echo "codex home not found: $selected" >&2
+    return 3
+  fi
+  export CODEX_HOME="$selected"
 }
 
 MODE=implement; SPEC=""; TASK=""; BASE=""; OUT=""
@@ -85,7 +107,7 @@ READONLY_MODE=0; [ "$MODE" != implement ] && READONLY_MODE=1
 log_usage() { # status tokens_in tokens_cached tokens_out session
   local T1; T1=$(date +%s%3N 2>/dev/null || date +%s000)
   node "$HERE/usage-log.mjs" \
-    --lane "codex-$MODE" --model "${MODEL:-codex-default}" --effort "${EFFORT:-default}" --access "$ACCESS" \
+    --lane "codex-$MODE" --model "${MODEL:-codex-default}" --effort "${EFFORT:-default}" --access "$ACCESS" --home "$HOME_LABEL" \
     --status "$1" --in "${2:-0}" --cached "${3:-0}" --out "${4:-0}" \
     --duration "$((T1 - T0))" --project "$(pwd -W 2>/dev/null || pwd)" --session "${5:-}" >/dev/null 2>&1 || true
 }
@@ -102,10 +124,8 @@ if [ -z "$LLM_BASE" ] || [ -z "$LLM_KEY" ]; then
 fi
 CODEX_VERSION=$(codex --version 2>/dev/null | head -1)
 BASE_URL="${LLM_BASE%/}/v1"
-# Private codex home at runtime (codex writes state + trust entries there); seeded from the plugin template.
-export CODEX_HOME="${LANE_CODEX_HOME:-$HOME/.claude/llm-codex-home}"
-mkdir -p "$CODEX_HOME"
-[ -f "$CODEX_HOME/config.toml" ] || cp "$PLUGIN/codex-home/config.toml" "$CODEX_HOME/config.toml"
+# Only private mode creates and seeds a home. Other modes use existing homes as-is.
+resolve_codex_home || { echo "STATUS: unavailable"; log_usage unavailable; exit 3; }
 
 # --- working root (Windows-safe) --------------------------------------------
 if pwd -W >/dev/null 2>&1; then ROOT=$(pwd -W); else ROOT=$(pwd); fi
@@ -244,7 +264,7 @@ fi
 if [ -n "$OUT" ]; then mkdir -p "$(dirname "$OUT")"; cp "$FINAL" "$OUT"; fi
 
 # --- report -----------------------------------------------------------------
-echo "===== CODEX FINAL MESSAGE ($MODE · $MODEL via $BASE_URL, effort: ${EFFORT:-default}, access: $ACCESS, $CODEX_VERSION${RESUME:+, resumed}) ====="
+echo "===== CODEX FINAL MESSAGE ($MODE · $MODEL via $BASE_URL, effort: ${EFFORT:-default}, access: $ACCESS, home: $HOME_LABEL, $CODEX_VERSION${RESUME:+, resumed}) ====="
 if [ -s "$FINAL" ]; then cat "$FINAL"; else echo "(no final message written)"; fi
 echo
 echo "===== END ====="

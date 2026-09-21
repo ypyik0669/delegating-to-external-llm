@@ -65,7 +65,9 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/lane-run.mjs" --batch a.md b.md c.md      # 
 
 Lanes take 10–40 minutes. Launch the call with `run_in_background: true` (Bash timeout 3600000) and do nothing until the completion notification arrives; the analyze lane is the same. No `sleep` loops, no polling of log files.
 
-The driver lints the spec, runs `codex-lane.sh` (relay model via codex, private `CODEX_HOME`, permission level from `LLM_CODEX_ACCESS`, edits fenced to FILES, stray writes to the main tree moved back into the worktree), re-runs every VERIFICATION command itself, resumes the same codex session with the failing output up to `--max-resumes` times, checks lockfile churn, and prints a LANE REPORT. Exit 0 = `complete`, 5 = `partial`, 2 = `refused`/`unavailable`.
+The driver lints the spec, runs `codex-lane.sh` (relay model via codex, selectable `CODEX_HOME`, permission level from `LLM_CODEX_ACCESS`, edits fenced to FILES, stray writes to the main tree moved back into the worktree), re-runs every VERIFICATION command itself, resumes the same codex session with the failing output up to `--max-resumes` times, checks lockfile churn, and prints a LANE REPORT. Exit 0 = `complete`, 5 = `partial`, 2 = `refused`/`unavailable`.
+
+**Private vs shared codex home.** Set `LLM_CODEX_HOME` in `~/.claude/llm-relay.env`: `private` (default) uses `~/.claude/llm-codex-home`, seeded from `codex-home/config.toml`; `shared` uses `${CODEX_HOME:-$HOME/.codex}` and loads your Codex CLI/App plugins, MCP servers, skills, AGENTS.md and trust entries. Measured base input per run was **42k private vs 122k shared (~3x)**. You can also select an existing directory path (including `~/…`); shared/path mode never creates the home or copies the template config. A missing home reports `codex home not found: <path>` and `STATUS: unavailable`, exit 3. Precedence: `LANE_CODEX_HOME` environment override → `LLM_CODEX_HOME` environment → env file → `private`. The banner and usage ledger record the selected home; model fallback still reads your original codex config before switching homes.
 
 Call it from Bash directly. Use the `codex-implementer` agent only to keep a very long report out of your context; it adds nothing else.
 
@@ -149,8 +151,8 @@ ROUNDS: n — fresh in=… out=… → ran | resume … / SESSION: <thread id> /
 
 ## Setup (once per machine)
 
-1. `node "${CLAUDE_PLUGIN_ROOT}/scripts/setup.mjs"` (or `/delegating-to-external-llm:setup`): relay base URL, API key (echo off), model, default effort, minimum request size, codex permission level (`workspace` default, `workspace-net`, `yolo`). Writes `~/.claude/llm-relay.env` (mode 600) and smoke-tests.
-2. `npm i -g @openai/codex@latest` (≥ 0.155). No `codex login`: the lane points codex at the relay, under a private `~/.claude/llm-codex-home` seeded from `codex-home/config.toml` — your `~/.codex` (MCP servers, AGENTS.md, profiles) never loads into a lane.
+1. `node "${CLAUDE_PLUGIN_ROOT}/scripts/setup.mjs"` (or `/delegating-to-external-llm:setup`): relay base URL, API key (echo off), model, default effort, minimum request size, codex permission level (`workspace` default, `workspace-net`, `yolo`), and codex home (`private` default, `shared`, or an existing path; flag: `--codex-home <value>`). The home question defaults to the existing `LLM_CODEX_HOME` or `private` and reports it in the summary. Writes `~/.claude/llm-relay.env` (mode 600) and smoke-tests.
+2. `npm i -g @openai/codex@latest` (≥ 0.155). No `codex login`: the lane points codex at the relay, under the selected `LLM_CODEX_HOME`. Private uses `~/.claude/llm-codex-home` seeded from `codex-home/config.toml`; shared/path modes use the existing home without seeding its config.
 3. Optional prices for USD in the ledger: `LLM_PRICE_IN/CACHED/OUT`, `CLAUDE_PRICE_IN/OUT` in the env file.
 4. Nothing else: with the plugin enabled, a hook injects a one-paragraph reminder on session start and on every prompt (no trigger phrase, survives compaction) and the edit gate is armed. To code normally, disable the plugin. (Editing `~/.claude/CLAUDE.md` is not required.)
 

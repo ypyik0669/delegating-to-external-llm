@@ -44,9 +44,11 @@ Claude never opens a source file to learn the codebase, never types implementati
 | Lane | How the model runs | Agent | When |
 |---|---|---|---|
 | Analyze | `codex exec` read-only by contract; returns a ≤30-line brief + six-part spec draft | `lane-run.mjs --analyze` / `codex-analyst` | Every task, before the spec |
-| Implement (default) | `lane-run.mjs`: spec-lint → `codex exec` on your relay (private `CODEX_HOME`, permission level `workspace` / `workspace-net` / `yolo`) → independent verification → resume on failure → LANE REPORT | `lane-run.mjs` / `codex-implementer` | Any implementation task |
+| Implement (default) | `lane-run.mjs`: spec-lint → `codex exec` on your relay (selectable `CODEX_HOME`, permission level `workspace` / `workspace-net` / `yolo`) → independent verification → resume on failure → LANE REPORT | `lane-run.mjs` / `codex-implementer` | Any implementation task |
 | Chat / fallback | `scripts/llm.mjs` chat completions; the agent applies the reply verbatim | `relay-implementer` | codex unavailable, a task failed twice, or you want the audited four-call trail (`PROTOCOL: four-phase`) |
 | Review | `codex-lane.sh --review` (external reads the diff) then Claude judges | `llm-advisor` | Commitment boundaries + mandatory end-of-deliverable review |
+
+**Private vs shared codex home.** Set `LLM_CODEX_HOME` in `~/.claude/llm-relay.env`: `private` (default) uses `~/.claude/llm-codex-home`, seeded from `codex-home/config.toml`; `shared` uses `${CODEX_HOME:-$HOME/.codex}` and loads your Codex CLI/App plugins, MCP servers, skills, AGENTS.md and trust entries. Measured base input per run was **42k private vs 122k shared (~3x)**. You can also select an existing directory path (including `~/…`); shared/path mode never creates the home or copies the template config. A missing home reports `codex home not found: <path>` and `STATUS: unavailable`, exit 3. Precedence: `LANE_CODEX_HOME` environment override → `LLM_CODEX_HOME` environment → env file → `private`. The banner and usage ledger record the selected home; model fallback still reads your original codex config before switching homes.
 
 Reasoning effort is named **per task** in the spec (`REASONING: low|medium|high|xhigh`), never pinned globally.
 
@@ -178,11 +180,12 @@ It asks for:
 | Default reasoning effort | `low|medium|high|xhigh`, used when a spec omits `REASONING:` |
 | Minimum input tokens | `0` unless your relay rejects small requests; then e.g. `2000` and `llm.mjs` pads short prompts automatically |
 | codex permission level | `workspace` (repo-only, no network — default), `workspace-net` (repo + network), `yolo` (no sandbox, no approval prompts: the model can do anything your account can) |
+| codex home for lanes | `private` (lean/cheap, default), `shared` (your full codex plugins/MCPs/skills, ~3x base tokens), or an existing directory path; saved as `LLM_CODEX_HOME` |
 
 Then it smoke-tests the relay and reports whether codex is present. Non-interactive:
 
 ```
-node scripts/setup.mjs --base https://relay.example.com --key sk-... --model <model> --reasoning xhigh --min-input 0 --codex-access workspace
+node scripts/setup.mjs --base https://relay.example.com --key sk-... --model <model> --reasoning xhigh --min-input 0 --codex-access workspace --codex-home private
 ```
 
 Inside Claude Code, `/delegating-to-external-llm:setup` walks you through the same thing (and `--check` re-verifies).
@@ -293,7 +296,7 @@ codex-home/config.toml                         template for the lanes' private C
 templates/analysis-prompt.md                   brief + spec-draft prompt
 scripts/setup.mjs                              interactive relay/key/permission setup + smoke test
 scripts/llm.mjs                                streaming chat-completions CLI (--spec, -f, --effort, --out, --pad, retries, ledger)
-scripts/codex-lane.sh                          codex exec wrapper: implement / --analyze / --review, relay provider, private CODEX_HOME, access level, file fence, stray-write guard, session resume, ledger
+scripts/codex-lane.sh                          codex exec wrapper: implement / --analyze / --review, relay provider, selectable CODEX_HOME, access level, file fence, stray-write guard, session resume, ledger
 scripts/spec-lint.mjs                          refuses incomplete or code-dictating specs
 scripts/lane-worktree.sh                       create / check / merge / cleanup one worktree per parallel lane
 scripts/usage.mjs, scripts/usage-log.mjs       usage ledger

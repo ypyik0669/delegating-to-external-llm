@@ -115,6 +115,18 @@ test("setup defaults to following codex config", () => {
   const r = node("setup.mjs", ["--base", "https://example.invalid", "--key", "test-key", "--no-test"], f);
   assert.equal(r.status, 0, r.stderr);
   assert.match(fs.readFileSync(path.join(f.home, ".claude/llm-relay.env"), "utf8"), /^LLM_MODEL=$/m);
+  assert.match(fs.readFileSync(path.join(f.home, ".claude/llm-relay.env"), "utf8"), /^LLM_CODEX_HOME=private$/m);
+});
+
+test("setup --codex-home shared writes, reports, and preserves the selection", () => {
+  const f = fixture();
+  const args = ["--base", "https://example.invalid", "--key", "test-key", "--no-test"];
+  for (const extra of [["--codex-home", "shared"], []]) {
+    const r = node("setup.mjs", [...args, ...extra], f);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(fs.readFileSync(path.join(f.home, ".claude/llm-relay.env"), "utf8"), /^LLM_CODEX_HOME=shared$/m);
+    assert.match(r.stdout, /LLM_CODEX_HOME=shared/);
+  }
 });
 test("lane driver omits --model for an empty MODEL spec field", () => {
   const f = fixture();

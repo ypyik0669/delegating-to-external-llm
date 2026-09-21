@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.5.0 — 2026-09-21
+
+### Added
+- `LLM_CODEX_HOME=private|shared|<path>` selects the codex home for lanes. Private remains the default; shared uses the incoming `CODEX_HOME` or `~/.codex` with the user's plugins, MCP servers, skills, AGENTS.md and trust entries. `LANE_CODEX_HOME` wins over the setting; environment values win over the env file.
+- Setup prompts for the home, accepts `--codex-home`, saves the selection and prints it in the summary.
+- Lane banners show `home:`; usage records include optional `home` (null when absent). Older records and unknown fields remain supported.
+- Shared/path homes must already exist (missing home: `STATUS: unavailable`, exit 3); the lane never seeds or overwrites their configs. Private still seeds only a missing config.
+- Stub-codex tests cover home selection, precedence, preservation, missing homes and ledger compatibility. Documented measured base input: private 42k vs shared 122k per run (~3x).
+
 ## 2.4.0 — 2026-09-21
 
 ### Changed

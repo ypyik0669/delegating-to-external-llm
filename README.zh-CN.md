@@ -44,9 +44,11 @@ Claude 不打开源码学习仓库、不写实现代码、不逐轮看管通道�
 | 通道 | 模型运行方式 | 代理 | 何时用 |
 |---|---|---|---|
 | 分析 | `codex exec` 契约只读；返回 ≤30 行 brief + 六段式 spec 草稿 | `lane-run.mjs --analyze` / `codex-analyst` | 每个任务写 spec 之前 |
-| 实现（默认） | `lane-run.mjs`：spec-lint → 中转上的 `codex exec`（私有 `CODEX_HOME`，权限档位 `workspace` / `workspace-net` / `yolo`）→ 独立验证 → 失败续跑 → LANE REPORT | `lane-run.mjs` / `codex-implementer` | 所有实现任务 |
+| 实现（默认） | `lane-run.mjs`：spec-lint → 中转上的 `codex exec`（可选 `CODEX_HOME`，权限档位 `workspace` / `workspace-net` / `yolo`）→ 独立验证 → 失败续跑 → LANE REPORT | `lane-run.mjs` / `codex-implementer` | 所有实现任务 |
 | Chat / 备用 | `scripts/llm.mjs` 聊天补全，代理逐字应用回复 | `relay-implementer` | codex 不可用、同一任务失败两次、或想要可审计的四次调用轨迹（`PROTOCOL: four-phase`） |
 | Review | 先 `codex-lane.sh --review`（外部模型读 diff），再由 Claude 裁定 | `llm-advisor` | 关键决策点 + 每次交付前的强制终审 |
+
+**私有与共享 codex home。** 在 `~/.claude/llm-relay.env` 设置 `LLM_CODEX_HOME`：`private`（默认）使用 `~/.claude/llm-codex-home`，首次从 `codex-home/config.toml` 初始化；`shared` 使用 `${CODEX_HOME:-$HOME/.codex}`，加载你 Codex CLI/App 的全部插件、MCP 服务器、skills、AGENTS.md 和信任记录。实测每次运行的基础输入为 **private 42k、shared 122k（约 3 倍）**。也可指定已有目录路径（支持 `~/…`）；共享或路径模式不会创建目录或复制模板配置。目录不存在时输出 `codex home not found: <path>` 和 `STATUS: unavailable`，退出码为 3。优先级：环境变量 `LANE_CODEX_HOME` → 环境变量 `LLM_CODEX_HOME` → env 文件 → `private`。通道横幅和用量账本记录所选 home；模型回退仍在切换前读取用户原来的 codex 配置。
 
 推理档位**按任务**写在 spec 里（`REASONING: low|medium|high|xhigh`），不做全局钉死。
 
@@ -178,11 +180,12 @@ node ~/.claude/skills/delegating-to-external-llm/scripts/setup.mjs
 | Default reasoning effort | `low|medium|high|xhigh`，spec 未写 `REASONING:` 时的默认值 |
 | Minimum input tokens | 一般填 `0`；若你的中转拒绝小请求（如"不接受少于 2000 token"），填 `2000`，`llm.mjs` 会自动填充短提示 |
 | codex permission level | `workspace`（只能写仓库内、无网络，默认）、`workspace-net`（仓库 + 网络）、`yolo`（无沙箱、不弹确认，模型能做你账号能做的一切） |
+| codex home for lanes | `private`（默认，精简省 token）、`shared`（完整插件/MCP/skills，基础 token 约 3 倍），或已有目录路径；保存为 `LLM_CODEX_HOME` |
 
 随后自动冒烟测试中转，并报告是否检测到 codex。非交互方式：
 
 ```
-node scripts/setup.mjs --base https://relay.example.com --key sk-... --model <model> --reasoning xhigh --min-input 0 --codex-access workspace
+node scripts/setup.mjs --base https://relay.example.com --key sk-... --model <model> --reasoning xhigh --min-input 0 --codex-access workspace --codex-home private
 ```
 
 在 Claude Code 内也可以用 `/delegating-to-external-llm:setup` 走同样流程（`--check` 只做复验）。
@@ -293,7 +296,7 @@ codex-home/config.toml                         通道私有 CODEX_HOME 的模板
 templates/analysis-prompt.md                   brief + spec 草稿提示
 scripts/setup.mjs                              交互式中转 / key / 权限档位配置 + 冒烟测试
 scripts/llm.mjs                                流式聊天补全 CLI（--spec、-f、--effort、--out、--pad、自动重试、记账）
-scripts/codex-lane.sh                          codex exec 包装：实现 / --analyze / --review、中转 provider、私有 CODEX_HOME、权限档位、文件围栏、误写守卫、会话续跑、记账
+scripts/codex-lane.sh                          codex exec 包装：实现 / --analyze / --review、中转 provider、可选 CODEX_HOME、权限档位、文件围栏、误写守卫、会话续跑、记账
 scripts/spec-lint.mjs                          拒绝不完整或"口述实现"的 spec
 scripts/lane-worktree.sh                       并行通道的 worktree create / check / merge / cleanup
 scripts/usage.mjs, scripts/usage-log.mjs       用量账本

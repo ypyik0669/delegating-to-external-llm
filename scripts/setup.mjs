@@ -3,7 +3,7 @@
 // Writes ~/.claude/llm-relay.env (mode 600) and runs a smoke test.
 //
 //   node scripts/setup.mjs                       # prompts for everything
-//   node scripts/setup.mjs --base https://relay.example.com --key sk-... [--model <slug>] [--reasoning xhigh] [--min-input 0] [--codex-access workspace|workspace-net|yolo] [--no-test]
+//   node scripts/setup.mjs --base https://relay.example.com --key sk-... [--model <slug>] [--reasoning xhigh] [--min-input 0] [--codex-access workspace|workspace-net|yolo] [--codex-home private|shared|<path>] [--no-test]
 //
 // The key is read with echo off when prompted. Nothing is sent anywhere except
 // to the relay you name, and only for the smoke test.
@@ -16,12 +16,12 @@ import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = path.join(os.homedir(), ".claude", "llm-relay.env");
-const DEFAULTS = { model: "", reasoning: "xhigh", minInput: "0", codexAccess: "workspace" };
+const DEFAULTS = { model: "", reasoning: "xhigh", minInput: "0", codexAccess: "workspace", codexHome: "private" };
 const ACCESS = ["workspace", "workspace-net", "yolo"];
 const EFFORTS = ["low", "medium", "high", "xhigh"];
 
 const args = process.argv.slice(2);
-const opt = { base: null, key: null, model: null, reasoning: null, minInput: null, codexAccess: null, test: true };
+const opt = { base: null, key: null, model: null, reasoning: null, minInput: null, codexAccess: null, codexHome: null, test: true };
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === "--base") opt.base = args[++i];
@@ -30,6 +30,7 @@ for (let i = 0; i < args.length; i++) {
   else if (a === "--reasoning") opt.reasoning = args[++i];
   else if (a === "--min-input") opt.minInput = args[++i];
   else if (a === "--codex-access") opt.codexAccess = args[++i];
+  else if (a === "--codex-home") opt.codexHome = args[++i];
   else if (a === "--no-test") opt.test = false;
   else if (a === "-h" || a === "--help") {
     console.log(fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 9).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
@@ -74,7 +75,7 @@ function askHidden(q) {
 
 const mask = (k) => (k ? `${k.slice(0, 5)}…${k.slice(-4)}` : "");
 
-let { base, key, model, reasoning, minInput, codexAccess } = opt;
+let { base, key, model, reasoning, minInput, codexAccess, codexHome } = opt;
 if (!base) base = await ask("Relay base URL (OpenAI-compatible, without /v1)", existing.LLM_BASE || "");
 if (!key) {
   const cur = existing.LLM_KEY ? ` (enter to keep ${mask(existing.LLM_KEY)})` : "";
@@ -84,6 +85,7 @@ if (model === null) model = await ask("Model (empty = follow ~/.codex/config.tom
 if (!reasoning) reasoning = await ask(`Default reasoning effort (${EFFORTS.join("|")})`, existing.LLM_REASONING || DEFAULTS.reasoning);
 if (minInput === null) minInput = await ask("Minimum input tokens your relay requires per request (0 if none; some relays reject tiny requests)", existing.LLM_MIN_INPUT_TOKENS || DEFAULTS.minInput);
 if (!codexAccess) codexAccess = await ask("codex permission level: workspace (repo-only, no network) | workspace-net (repo + network) | yolo (no sandbox, no approvals)", existing.LLM_CODEX_ACCESS || DEFAULTS.codexAccess);
+if (codexHome === null) codexHome = await ask("codex home for lanes (private = lean/cheap, shared = your full codex plugins/MCPs/skills, ~3x base tokens)", existing.LLM_CODEX_HOME || DEFAULTS.codexHome);
 rl.close();
 
 base = (base || "").replace(/\/+$/, "").replace(/\/v1$/, "");
@@ -92,6 +94,8 @@ if (!key) { console.error(tty ? "setup: API key is required" : "setup: pass --ba
 if (!/^\d+$/.test(String(minInput))) { console.error("setup: --min-input must be a non-negative integer"); process.exit(2); }
 if (!EFFORTS.includes(reasoning)) { console.error(`setup: reasoning must be one of ${EFFORTS.join("|")}`); process.exit(2); }
 if (!ACCESS.includes(codexAccess)) { console.error(`setup: --codex-access must be one of ${ACCESS.join("|")}`); process.exit(2); }
+if (!codexHome?.trim() || /[\r\n]/.test(codexHome) || codexHome.startsWith("--")) { console.error("setup: --codex-home requires private, shared, or a directory path on one line"); process.exit(2); }
+codexHome = codexHome.trim();
 
 fs.mkdirSync(path.dirname(ENV_PATH), { recursive: true });
 const body = [
@@ -102,12 +106,13 @@ const body = [
   `LLM_REASONING=${reasoning}`,
   `LLM_MIN_INPUT_TOKENS=${minInput}`,
   `LLM_CODEX_ACCESS=${codexAccess}`,
+  `LLM_CODEX_HOME=${codexHome}`,
   "",
 ].join("\n");
 fs.writeFileSync(ENV_PATH, body, { encoding: "utf8", mode: 0o600 });
 try { fs.chmodSync(ENV_PATH, 0o600); } catch {}
 console.log(`\nWrote ${ENV_PATH}`);
-console.log(`  LLM_BASE=${base}\n  LLM_KEY=${mask(key)}\n  LLM_MODEL=${model || "(empty = follow ~/.codex/config.toml)"}\n  LLM_REASONING=${reasoning}\n  LLM_MIN_INPUT_TOKENS=${minInput}\n  LLM_CODEX_ACCESS=${codexAccess}`);
+console.log(`  LLM_BASE=${base}\n  LLM_KEY=${mask(key)}\n  LLM_MODEL=${model || "(empty = follow ~/.codex/config.toml)"}\n  LLM_REASONING=${reasoning}\n  LLM_MIN_INPUT_TOKENS=${minInput}\n  LLM_CODEX_ACCESS=${codexAccess}\n  LLM_CODEX_HOME=${codexHome}`);
 if (codexAccess === "yolo") console.log("  ! yolo: codex runs with no sandbox and no approval prompts — it can do anything your user account can.");
 
 if (opt.test) {

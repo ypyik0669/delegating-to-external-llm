@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Append one usage record to ~/.claude/llm-usage.jsonl (or $LLM_USAGE_LOG).
 //   node usage-log.mjs --lane codex|chat --model m --effort e --access a --status s \
-//        --in 123 --cached 0 --out 45 --duration 8000 --project <cwd> [--session <id>]
+//        --in 123 --cached 0 --out 45 --duration 8000 --project <cwd> [--session <id>] [--home <label>]
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +15,7 @@ export function appendUsage(rec) {
     model: rec.model || null,
     effort: rec.effort || null,
     access: rec.access || null,
+    home: rec.home || null,
     status: rec.status || "unknown",
     prompt_tokens: num(rec.in),
     cached_tokens: num(rec.cached),
