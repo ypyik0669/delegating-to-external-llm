@@ -23,6 +23,8 @@ SPEC_EOF
 node "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/delegating-to-external-llm}/scripts/lane-run.mjs" --detach --spec "$SPEC" --max-resumes 2 --timeout 900
 ```
 
+If the architect explicitly supplies a session to continue, add `--resume <thread-id>` with the new spec. The driver reapplies the FILES fence and independently runs the new spec's verification. The implementation model emits a first-message `PLAN:` block with 3–8 `- [ ]` steps, then updated `- [x]` blocks; the dashboard displays them without requiring an `update_plan` tool.
+
 3. Your **first progress message** is the launcher's exact `SLUG:`, `WATCH:` and `DASHBOARD:` lines (when enabled), without commentary. Preserve the slug and the status directory from `STATUS_FILE:` / `WATCH:`; use that same directory for every wait, even across Bash calls. Relay `RESUME:` too if present.
 
 4. Make a foreground Bash call with timeout **600000 ms** (not a background call):

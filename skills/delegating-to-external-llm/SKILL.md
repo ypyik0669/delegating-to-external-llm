@@ -46,7 +46,7 @@ task ──► analyze lane (external, read-only by contract) ──► BRIEF + 
 ### 1. Analyze — the external model reads the code, not you
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/lane-run.mjs" --detach --analyze "<one-line task>" --effort medium --timeout 600 --out "<scratch>/<unique-lane>-brief.md"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/lane-run.mjs" --detach --analyze "<one-line task>" --effort medium --out "<scratch>/<unique-lane>-brief.md"
 node "${CLAUDE_PLUGIN_ROOT}/scripts/lane-run.mjs" --wait <returned-slug> --timeout 540 --status-dir "<returned-status-directory>"
 ```
 
@@ -69,7 +69,11 @@ Launch one `codex-implementer` subagent per spec in the same message, up to the 
 
 For an explicit batch, `lane-run.mjs --batch a.md b.md --concurrency 2` may use `run_in_background: true` (Bash timeout 3600000); this is the only main-session background exception. Alternatively `--detach --batch` launches one independent batch process and prints every slug for `--wait <slug…>`. Duplicate spec basenames are rejected before any lane starts. Always relay the `WATCH:` line.
 
-The driver lints the spec, runs `codex-lane.sh` (relay model via codex, selectable `CODEX_HOME`, permission level from `LLM_CODEX_ACCESS`, edits fenced to FILES, stray writes to the main tree moved back into the worktree), re-runs every VERIFICATION command itself, resumes the same codex session with the failing output up to `--max-resumes` times, checks lockfile churn, and prints a LANE REPORT. Exit 0 = `complete`, 5 = `partial`, 2 = `refused`/`unavailable`.
+The driver lints the spec, runs `codex-lane.sh` (relay model via codex, selectable `CODEX_HOME`, permission level from `LLM_CODEX_ACCESS`, edits fenced to FILES), re-runs every VERIFICATION command itself, resumes the same codex session with the failing output up to `--max-resumes` times, checks lockfile churn, and prints a LANE REPORT. Only event-attributed main-tree writes with a safe baseline/destination are moved back; ambiguous writes are reported as `WROTE OUTSIDE WORKTREE (not moved)` without changing either tree. Ignored paths are never recovered or deleted. Exit 0 = `complete`, 5 = `partial`, 2 = `refused`/`unavailable`/`timeout`.
+
+Analyze lanes default to **1800 seconds**; `--timeout` overrides this. To continue a known session with new instructions, use `lane-run.mjs --resume <thread-id> --analyze --task-file <new-task.md>` or `--resume <thread-id> --spec <new-spec.md>`. Implementation continuations remain fenced and independently verified. Analyze wait reports retain `RESUME:` and `BRIEF_PATH:` even on timeout. Without `--out`, the brief is saved under the lane cwd's `.lane-scratch/`.
+
+The implementation model starts its first message with `PLAN:` and 3–8 `- [ ]` steps, then emits updated blocks using `- [x]` as steps complete. Codex exec has no `update_plan` tool; the dashboard derives its checklist from the latest message block when no native todo event exists.
 
 **Private vs shared codex home.** Set `LLM_CODEX_HOME` in `~/.claude/llm-relay.env`: `private` (default) uses `~/.claude/llm-codex-home`, seeded from `codex-home/config.toml`; `shared` uses `${CODEX_HOME:-$HOME/.codex}` and loads your Codex CLI/App plugins, MCP servers, skills, AGENTS.md and trust entries. Measured base input per run was **42k private vs 122k shared (~3x)**. You can also select an existing directory path (including `~/…`); shared/path mode never creates the home or copies the template config. A missing home reports `codex home not found: <path>` and `STATUS: unavailable`, exit 3. Precedence: `LANE_CODEX_HOME` environment override → `LLM_CODEX_HOME` environment → env file → `private`. The banner and usage ledger record the selected home; model fallback still reads your original codex config before switching homes.
 
@@ -93,7 +97,11 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/lane-worktree.sh" create <slug>    # prints 
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/lane-worktree.sh" merge <slug>     # commits the lane's work, dry-run-checks, merges --no-commit
 ```
 
-Merge serially, as soon as each lane is `complete`; `merge` stashes whatever is already in the main tree (an earlier lane's result) around the merge, so you never need WIP commits. A conflict goes back to that lane as a corrected spec. Run the cross-cutting verification on the merged tree before the review. Only the user commits.
+Merge serially, as soon as each lane is `complete`, **even while another lane is still running**. This is safe and is the recommended flow: the stray-write guard uses the running lane's events, not main-tree status changes, so another lane's merge is not misattributed. `merge` stashes whatever is already in the main tree (an earlier lane's result) around the merge, so you never need WIP commits. A conflict goes back to that lane as a corrected spec. Run the cross-cutting verification on the merged tree before the review. Only the user commits.
+
+`create` prints the path first, then `deps: installed via <command> (Ns)` or `deps: skipped (<why>)`. Dependencies are installed in the worktree, never shared via symlinks/junctions: npm uses `ci --prefer-offline --no-audit --no-fund`, Bun/Yarn use frozen lockfiles, and pnpm tries frozen/offline before online. Missing lockfiles/tools are reported; `create <slug> --no-install` explicitly skips installation. An install failure leaves the worktree available and exits nonzero.
+
+When developing this plugin with its own lanes, copy **`scripts/`, `templates/` and `codex-home/` together**, preserving their sibling layout, to an isolated directory before starting. Run the copied `scripts/lane-run.mjs` from the target worktree (or point `LANE_RUN_LANE_SH` at the copied `scripts/codex-lane.sh`). Helpers resolve relative to the copied script, while FILES hashes and verification use the target cwd. Never copy just the shell script. A copied dashboard additionally needs `assets/dashboard.html`, or set `LLM_DASHBOARD=0`.
 
 ### 5. Review — cross-vendor first, Claude verdict second
 

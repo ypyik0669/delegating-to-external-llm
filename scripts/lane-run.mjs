@@ -4,9 +4,9 @@
 //   session with the failing output, up to --max-resumes times → LANE REPORT.
 // Thin subagents start detached lanes and relay wait output; the driver owns all supervision.
 //
-//   node lane-run.mjs --spec <spec.md> [--max-resumes 2] [--timeout 900] [--json]
+//   node lane-run.mjs --spec <spec.md> [--resume <thread-id>] [--max-resumes 2] [--timeout 900] [--json]
 //   node lane-run.mjs --batch a.md b.md c.md [--concurrency 2] [--status-dir <dir>]
-//   node lane-run.mjs --analyze "<task>" [--cwd <repo>] [--effort medium] [--out brief.md]
+//   node lane-run.mjs --analyze "<task>" [--resume <thread-id>] [--timeout 1800] [--cwd <repo>] [--effort medium] [--out brief.md]
 //   node lane-run.mjs --analyze --task-file <task.md> [--detach] [--out .lane-scratch/brief.md]
 //   node lane-run.mjs --detach --spec <spec.md> [--status-dir <dir>]
 //   node lane-run.mjs --wait <slug...> [--timeout 540] [--status-dir <dir>]
@@ -21,7 +21,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { lintSpec } from "./spec-lint.mjs";
 import { appendUsage } from "./usage-log.mjs";
-import { startDashboard } from "./lane-dashboard.mjs";
+import { startDashboard, parseApplyPatchFiles } from "./lane-dashboard.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LANE_SH = process.env.LANE_RUN_LANE_SH || path.join(HERE, "codex-lane.sh");
@@ -35,22 +35,132 @@ export function buildDetachedLauncher({ args, logFile, executable = process.exec
   return { command: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-Command", command], options: { detached: false, windowsHide: true } };
 }
 
-export function snapshotFiles(directory) {
+function fileHash(file) {
+  try {
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() && !stat.isSymbolicLink()) return null;
+    const bytes = stat.isSymbolicLink() ? fs.readlinkSync(file) : fs.readFileSync(file);
+    return createHash("sha256").update(`${stat.mode}:`).update(bytes).digest("hex");
+  } catch (error) { if (error.code === "ENOENT") return null; throw error; }
+}
+
+const inside = (directory, file) => {
+  const relative = path.relative(directory, file);
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+};
+const nativePath = (value) => process.platform === "win32" ? value.replace(/^\/([a-z])\//i, "$1:/") : value;
+
+export function snapshotFiles(directory, files = []) {
+  directory = path.resolve(directory);
   const listing = spawnSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], { cwd: directory, encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
-  if (listing.status !== 0) return null;
-  return Object.fromEntries([...new Set(listing.stdout.split("\0").filter(Boolean))].map((relative) => {
-    const file = path.join(directory, relative);
-    try {
-      const stat = fs.lstatSync(file);
-      if (!stat.isFile() && !stat.isSymbolicLink()) return [relative, null];
-      const bytes = stat.isSymbolicLink() ? fs.readlinkSync(file) : fs.readFileSync(file);
-      return [relative, createHash("sha256").update(`${stat.mode}:`).update(bytes).digest("hex")];
-    } catch (error) { if (error.code === "ENOENT") return [relative, null]; throw error; }
-  }));
+  if (listing.status !== 0 && !files.length) return null;
+  const candidates = [...(listing.status === 0 ? listing.stdout.split("\0").filter(Boolean) : []), ...files];
+  const paths = [...new Set(candidates.map((file) => path.resolve(directory, file)).filter((file) => inside(directory, file)))];
+  return Object.fromEntries(paths.map((file) => [path.relative(directory, file).replace(/\\/g, "/"), fileHash(file)]));
 }
 
 export function changedFiles(before, after) {
   return [...new Set([...Object.keys(before || {}), ...Object.keys(after || {})])].filter((file) => (before?.[file] ?? null) !== (after?.[file] ?? null)).sort();
+}
+
+const gitAt = (directory, args) => spawnSync("git", args, { cwd: directory, encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
+const protectedPath = (relative) => relative.split(/[\\/]/).some((part) => [".git", "node_modules", ".lanes", ".lane-scratch"].includes(part.toLowerCase()));
+function regularPath(directory, relative) {
+  const file = path.resolve(directory, relative);
+  if (!inside(directory, file) || file === path.resolve(directory)) return false;
+  let current = file;
+  while (current !== path.resolve(directory)) {
+    try {
+      const stat = fs.lstatSync(current);
+      if (stat.isSymbolicLink() || (current === file ? !stat.isFile() : !stat.isDirectory())) return false;
+    } catch (error) { if (error.code !== "ENOENT") return false; }
+    current = path.dirname(current);
+  }
+  return true;
+}
+const ignored = (directory, relative) => gitAt(directory, ["check-ignore", "--no-index", "-q", "--", relative]).status !== 1;
+
+export function snapshotLane(directory, files) {
+  directory = path.resolve(directory);
+  const lane = snapshotFiles(directory, files);
+  const worktrees = gitAt(directory, ["worktree", "list", "--porcelain"]);
+  const mainRoot = worktrees.stdout?.match(/^worktree (.+)$/m)?.[1];
+  const main = Object.create(null);
+  if (mainRoot && path.resolve(mainRoot) !== path.resolve(directory)) {
+    for (const file of files) {
+      const relative = path.relative(directory, path.resolve(directory, file)).replace(/\\/g, "/");
+      if (protectedPath(relative) || !regularPath(mainRoot, relative) || ignored(mainRoot, relative)) continue;
+      if (gitAt(mainRoot, ["diff", "--quiet", "HEAD", "--", relative]).status !== 0) continue;
+      const source = path.join(mainRoot, relative);
+      const hash = fileHash(source);
+      main[relative] = { hash, content: hash === null ? null : fs.readFileSync(source).toString("base64"), mode: hash === null ? null : fs.statSync(source).mode,
+        index: gitAt(mainRoot, ["ls-files", "--stage", "--", relative]).stdout };
+    }
+  }
+  return { lane, main, mainRoot };
+}
+
+export function strayEvidence(events, directory) {
+  const evidence = new Map();
+  const add = (value, cwd, proven = false) => {
+    if (typeof value !== "string" || !value || /[\r\n\0]/.test(value)) return;
+    const file = path.resolve(cwd, nativePath(value));
+    if (!inside(directory, file)) evidence.set(file, evidence.get(file) === true || proven);
+  };
+  for (const event of events) {
+    const item = event?.item;
+    if (!item) continue;
+    const cwd = path.resolve(directory, nativePath(item.cwd || item.workdir || event.cwd || directory));
+    const complete = event.type === "item.completed" && !["failed", "in_progress"].includes(item.status);
+    if (item.type === "file_change") {
+      for (const change of item.changes || []) add(change.path, cwd, complete);
+    }
+    if (item.type !== "command_execution") continue;
+    add(cwd, directory);
+    const command = item.command || "";
+    const directories = [...command.matchAll(/(?:\bcd(?:\s+\/d)?|\bSet-Location(?:\s+-Path)?)\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/gi)];
+    let commandCwd = cwd;
+    for (const match of directories) {
+      commandCwd = path.resolve(commandCwd, nativePath(match[1] || match[2] || match[3]));
+      add(commandCwd, directory);
+    }
+    const directPatch = /^\s*apply_patch\s/.test(command);
+    for (const file of parseApplyPatchFiles(command)) add(file.path, commandCwd, directPatch && complete && item.exit_code === 0 && directories.length === 0 && !/[$`]/.test(file.path));
+    for (const match of command.matchAll(/"([^"]+)"|'([^']+)'|([^\s<>;|&()]+)/g)) {
+      const token = match[1] || match[2] || match[3];
+      if (/^(?:[A-Za-z]:[\\/]|\/|\.\.[\\/])/.test(token)) add(token, commandCwd);
+    }
+  }
+  return evidence;
+}
+
+export function recoverStrayWrites(directory, events, before) {
+  const moved = [], notMoved = [];
+  for (const [source, proven] of strayEvidence(events, directory)) {
+    const relative = before.mainRoot ? path.relative(before.mainRoot, source).replace(/\\/g, "/") : source;
+    const baseline = before.main[relative];
+    if (!proven || !baseline || protectedPath(relative) || !regularPath(before.mainRoot, relative) || !regularPath(directory, relative)
+      || ignored(before.mainRoot, relative) || ignored(directory, relative)
+      || gitAt(before.mainRoot, ["ls-files", "--stage", "--", relative]).stdout !== baseline.index
+      || fileHash(path.join(directory, relative)) !== (before.lane?.[relative] ?? null)) {
+      notMoved.push(source); continue;
+    }
+    const hash = fileHash(source);
+    if (hash === baseline.hash) continue;
+    const content = hash === null ? null : fs.readFileSync(source);
+    const mode = hash === null ? null : fs.statSync(source).mode;
+    const destination = path.join(directory, relative);
+    if (content === null) { if (fs.existsSync(destination)) fs.unlinkSync(destination); }
+    else {
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.writeFileSync(destination, content);
+      fs.chmodSync(destination, mode);
+    }
+    if (baseline.content === null) fs.unlinkSync(source);
+    else { fs.writeFileSync(source, Buffer.from(baseline.content, "base64")); fs.chmodSync(source, baseline.mode); }
+    moved.push(relative);
+  }
+  return { moved, notMoved };
 }
 
 async function main() {
@@ -61,6 +171,10 @@ const opt = { spec: null, batch: [], analyze: null, cwd: null, effort: null, out
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === "--spec") opt.spec = args[++i];
+  else if (a === "--resume") {
+    if (!args[i + 1] || args[i + 1].startsWith("--")) { console.error("lane-run: --resume requires a thread id"); process.exit(1); }
+    opt.resume = args[++i];
+  }
   else if (a === "--batch") { while (args[i + 1] && !args[i + 1].startsWith("--")) opt.batch.push(args[++i]); }
   else if (a === "--analyze") opt.analyze = args[i + 1] && !args[i + 1].startsWith("--") ? args[++i] : "";
   else if (a === "--task-file") {
@@ -87,6 +201,8 @@ if (opt.taskFile) {
   catch (error) { console.error(`lane-run: --task-file: ${error.message}`); process.exit(1); }
 }
 if ((args.includes("--analyze") || opt.taskFile) && !opt.analyze) { console.error("lane-run: analysis requires a nonempty task or --task-file"); process.exit(1); }
+if (opt.analyze && !args.includes("--timeout")) opt.timeout = 1800;
+if (opt.resume && (opt.batch.length || opt.wait.length || (!opt.spec && !opt.analyze))) { console.error("lane-run: --resume requires one --spec or --analyze lane"); process.exit(1); }
 
 const winPath = (p) => (process.platform === "win32" ? p.replace(/\\/g, "/") : p);
 const shellQuote = (value) => `'${String(value).replace(/'/g, "'\\''")}'`;
@@ -116,6 +232,7 @@ const writeStatus = (file, patch = {}, reset = false) => {
     next.model = patch.model ?? current.model ?? process.env.LLM_MODEL ?? "codex-default";
     next.effort = patch.effort ?? current.effort ?? opt.effort ?? "default";
     next.home = patch.home ?? current.home ?? process.env.LANE_CODEX_HOME ?? process.env.LLM_CODEX_HOME ?? "private";
+    next.brief_path = patch.brief_path ?? current.brief_path ?? null;
     const access = patch.access ?? current.access;
     if (typeof access === "string" && access && access !== "unknown") next.access = access;
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -181,6 +298,10 @@ if (args.includes("--wait")) {
         const seconds = Math.max(0, Math.floor(String(status.phase || "").startsWith("done ") ? Number(status.elapsed_s || 0) : (Date.now() - (Date.parse(status.started_at) || started)) / 1000));
         const last = String(status.last_message || "").replace(/[\x00-\x1f\x7f"\\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
         console.log(`RUNNING ${slug} phase=${status.phase || "pending"} elapsed=${Math.floor(seconds / 60)}m ${seconds % 60}s in=${Number(status.tokens?.in || 0)} cached=${Number(status.tokens?.cached || 0)} out=${Number(status.tokens?.out || 0)} session=${status.session || "unknown"} last="${last}"`);
+        if (status.mode === "analyze") {
+          if (status.session && status.session !== "unknown") console.log(`RESUME: codex resume ${status.session}`);
+          if (status.brief_path) console.log(`BRIEF_PATH: ${status.brief_path}`);
+        }
       }
       process.exit(10);
     }
@@ -189,6 +310,7 @@ if (args.includes("--wait")) {
 }
 
 const analyzeSlug = opt.analyze ? process.env.LANE_RUN_ANALYZE_SLUG || (opt.out ? slugFor(opt.out) : `analyze-${Date.now()}-${process.pid}`) : null;
+if (opt.analyze) opt.out = path.resolve(opt.cwd || process.cwd(), opt.out || `.lane-scratch/${analyzeSlug}-brief.md`);
 if (opt.analyze && !opt.taskFile) {
   fs.mkdirSync(statusDir, { recursive: true });
   opt.taskFile = path.join(statusDir, `${analyzeSlug}.task.md`);
@@ -212,6 +334,7 @@ if (opt.detach) {
   if (opt.cwd) childArgs.push("--cwd", opt.cwd);
   if (opt.effort) childArgs.push("--effort", opt.effort);
   if (opt.out) childArgs.push("--out", opt.out);
+  if (opt.resume) childArgs.push("--resume", opt.resume);
   if (opt.json) childArgs.push("--json");
   const launcher = buildDetachedLauncher({ args: [fileURLToPath(import.meta.url), ...childArgs], logFile });
   const env = { ...process.env, LANE_RUN_ANALYZE_SLUG: analyzeSlug || "", LANE_RUN_LOG_FILE: logFile };
@@ -266,17 +389,17 @@ if (opt.analyze) {
   const cwd = opt.cwd || process.cwd();
   const analyzeStatus = path.join(statusDir, `${analyzeSlug}.status.json`);
   fs.rmSync(reportFileFor(analyzeSlug), { force: true });
-  writeStatus(analyzeStatus, { slug: analyzeSlug, mode: "analyze", spec: opt.analyze, phase: "running", last_message: opt.analyze }, true);
-  const cmd = `bash ${shellQuote(winPath(LANE_SH))} --analyze --task-file ${shellQuote(winPath(opt.taskFile))}${opt.effort ? ` --effort ${shellQuote(opt.effort)}` : ""} --timeout ${opt.timeout} --status-file ${shellQuote(winPath(analyzeStatus))}${opt.out ? ` --out ${shellQuote(winPath(opt.out))}` : ""}`;
+  writeStatus(analyzeStatus, { slug: analyzeSlug, mode: "analyze", spec: opt.analyze, phase: "running", last_message: opt.analyze, brief_path: opt.out, session: opt.resume }, true);
+  const cmd = `bash ${shellQuote(winPath(LANE_SH))} --analyze --task-file ${shellQuote(winPath(opt.taskFile))}${opt.effort ? ` --effort ${shellQuote(opt.effort)}` : ""} --timeout ${opt.timeout} --status-file ${shellQuote(winPath(analyzeStatus))} --out ${shellQuote(winPath(opt.out))}${opt.resume ? ` --resume ${shellQuote(opt.resume)}` : ""}`;
   const r = run(cmd, cwd, opt.timeout + 60);
   updateFromOutput(analyzeStatus, r.out);
-  const status = laneField(r.out, "STATUS") || (r.status === 0 ? "ran" : "failed");
-  const session = laneField(r.out, "SESSION") || "unknown";
-  const report = `LANE REPORT\nLANE: codex-analyst · driver: lane-run.mjs (no LLM supervisor)\nSTATUS: ${status === "ran" ? "complete" : status}\n${r.out.trimEnd()}\n${session !== "unknown" ? `RESUME: codex resume ${session}\n` : ""}`;
+  const status = laneField(r.out, "STATUS") || (r.status === 0 ? "ran" : r.status === 124 ? "timeout" : "failed");
+  const session = laneField(r.out, "SESSION") || readStatus(analyzeSlug)?.session || opt.resume || "unknown";
+  const report = `LANE REPORT\nLANE: codex-analyst · driver: lane-run.mjs (no LLM supervisor)\nSTATUS: ${status === "ran" ? "complete" : status}\nBRIEF_PATH: ${opt.out}\n${r.out.trimEnd()}\n${session !== "unknown" ? `RESUME: codex resume ${session}\n` : ""}`;
   fs.writeFileSync(reportFileFor(analyzeSlug), report, "utf8");
   writeStatus(analyzeStatus, { phase: `done ${status}`, exit: r.status });
-  if (opt.json) console.log(JSON.stringify({ status, status_file: analyzeStatus, session: laneField(r.out, "SESSION") || "unknown", dashboard, output: r.out }, null, 2));
-  else process.stdout.write(r.out.endsWith("\n") ? r.out : r.out + "\n");
+  if (opt.json) console.log(JSON.stringify({ status, status_file: analyzeStatus, session, brief_path: opt.out, dashboard, output: r.out }, null, 2));
+  else process.stdout.write(report);
   process.exit(r.status);
 }
 
@@ -301,9 +424,9 @@ async function runSpec(specPath) {
   };
   let text;
   try { text = fs.readFileSync(specAbs, "utf8"); } catch (error) { report.reason = error.message; return finish(); }
-  const lint = lintSpec(text, opt.cwd || process.cwd());
+  const lint = lintSpec(text, { cwd: opt.cwd || process.cwd() });
   const s = lint.sections;
-  const worktree = (s.WORKTREE || "").trim() || opt.cwd || process.cwd();
+  const worktree = path.resolve(opt.cwd || process.cwd(), (s.WORKTREE || "").trim() || ".");
   const effort = (s.REASONING || "").trim().split(/\s+/)[0]?.toLowerCase() || "";
   const model = (s.MODEL || "").trim();
   const files = lint.files.map((f) => f.split(/\s+/)[0].replace(/[`'"]/g, ""));
@@ -314,23 +437,25 @@ async function runSpec(specPath) {
   if (!fs.existsSync(worktree)) { report.status = "refused"; report.reason = `WORKTREE does not exist: ${worktree}`; return finish(); }
   if (effort && !["low", "medium", "high", "xhigh"].includes(effort)) { report.status = "unavailable"; report.reason = `effort ${effort} not supported`; return finish(); }
   writeStatus(statusFile, { effort: effort || "default", ...(model ? { model } : {}) });
-  const before = snapshotFiles(worktree);
+  const before = snapshotFiles(worktree, files);
 
   const verifs = parseVerification(s.VERIFICATION || "");
   const baseCmd = `bash "${winPath(LANE_SH)}" --files "${fileArg}"${effort ? ` --effort ${effort}` : ""}${model ? ` --model ${model}` : ""} --timeout ${opt.timeout} --status-file "${winPath(statusFile)}"`;
 
   let promptFile = specAbs;
-  let resume = "";
+  let resume = opt.resume || "";
   for (let round = 0; round <= opt.maxResumes; round++) {
     writeStatus(statusFile, { phase: round === 0 ? "running" : `resume ${round}/${opt.maxResumes}`, last_message: round === 0 ? "codex lane" : `resume ${round}/${opt.maxResumes}` });
-    const cmd = `${baseCmd} --spec "${winPath(promptFile)}"${resume ? ` --resume ${resume}` : ""}`;
+    const cmd = `${baseCmd} --spec "${winPath(promptFile)}"${resume ? ` --resume ${shellQuote(resume)}` : ""}`;
     const r = run(cmd, worktree, opt.timeout + 120);
-    if (before) report.changes = changedFiles(before, snapshotFiles(worktree));
+    if (before) report.changes = changedFiles(before, snapshotFiles(worktree, files));
     updateFromOutput(statusFile, r.out);
-    const st = laneField(r.out, "STATUS");
+    const reportedStatus = laneField(r.out, "STATUS");
+    const fencedChanges = report.changes.some((file) => files.some((allowed) => path.resolve(worktree, file) === path.resolve(worktree, allowed)));
+    const st = reportedStatus === "refused" && fencedChanges ? "ran" : reportedStatus;
     const tokens = laneField(r.out, "TOKENS");
     report.session = laneField(r.out, "SESSION") || report.session;
-    report.rounds.push(`${round === 0 ? "fresh" : "resume"} ${tokens} → ${st}${r.status === 5 ? " (scope violation)" : ""}`);
+    report.rounds.push(`${resume ? "resume" : "fresh"} ${tokens} → ${st}${r.status === 5 ? " (scope violation)" : ""}`);
     const finalMsg = (r.out.split("===== END =====")[0] || "").split("=====").pop()?.trim() || "";
     report.modelSaid = finalMsg.split(/\r?\n/).filter(Boolean).slice(0, 2).join(" ").slice(0, 400);
     if (st !== "ran") {
@@ -345,6 +470,8 @@ async function runSpec(specPath) {
     if (viol) report.gaps.push(`scope violation: ${viol}`);
     const stray = laneField(r.out, "WROTE OUTSIDE WORKTREE");
     if (stray) report.gaps.push(`model wrote outside the worktree (moved back): ${stray}`);
+    const notMoved = laneField(r.out, "WROTE OUTSIDE WORKTREE \\(not moved\\)");
+    if (notMoved) report.gaps.push(`model wrote outside the worktree (not moved): ${notMoved}`);
 
     // independent verification
     report.verified = [];

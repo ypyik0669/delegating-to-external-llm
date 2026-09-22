@@ -15,8 +15,10 @@ mkdir -p "<root>/.lane-scratch"
 cat > "<root>/.lane-scratch/<unique-lane>-task.md" <<'LANE_TASK_EOF'
 <the exact task, including all lines>
 LANE_TASK_EOF
-node "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/delegating-to-external-llm}/scripts/lane-run.mjs" --detach --analyze --task-file "<root>/.lane-scratch/<unique-lane>-task.md" --effort <low|medium|high as given, default medium> --timeout 600 --out "<root>/.lane-scratch/<unique-lane>-brief.md"
+node "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/delegating-to-external-llm}/scripts/lane-run.mjs" --detach --analyze --task-file "<root>/.lane-scratch/<unique-lane>-task.md" --effort <low|medium|high as given, default medium> --out "<root>/.lane-scratch/<unique-lane>-brief.md"
 ```
+
+The analysis timeout defaults to 1800 seconds; pass `--timeout` only when the architect supplies an override. For an explicitly requested continuation, add `--resume <thread-id>` with the new task file. Do not restart timed-out sessions automatically. Preserve `BRIEF_PATH:` and `RESUME:` in wait output, including timeouts.
 
 2. Your **first progress message** is the launcher's exact `SLUG:`, `WATCH:` and `DASHBOARD:` lines (when enabled). Preserve the returned slug and status directory across Bash calls. Relay `RESUME:` too if present; add no commentary.
 
@@ -26,6 +28,6 @@ node "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/delegating-to-external-llm}/scr
 node "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/delegating-to-external-llm}/scripts/lane-run.mjs" --wait "<returned-slug>" --timeout 540 --status-dir "<returned-status-directory>"
 ```
 
-On exit **10**, emit every `RUNNING ...` line as progress text **verbatim**, never summarised, then repeat the identical wait call. Never use `sleep`, poll logs, restart the lane, or attempt repairs. Each wait is at most nine minutes.
+On exit **10**, emit every `RUNNING ...`, `RESUME:` and `BRIEF_PATH:` line as progress text **verbatim**, never summarised, then repeat the identical wait call. Never use `sleep`, poll logs, restart the lane, or attempt repairs. Each wait is at most nine minutes.
 
 4. On exit **0, 5 or 2**, return the entire `LANE REPORT` **verbatim**, including the full BRIEF/SPEC DRAFT and session/resume information. No commentary or extra reads. On exit **4**, return `MISSING` verbatim and stop. If launch/wait itself fails without a report, return `STATUS: unavailable` with its error output as `REASON`; do not diagnose or fix it.

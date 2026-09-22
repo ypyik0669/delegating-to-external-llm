@@ -42,6 +42,44 @@ const parse = (records) => records.flatMap((line) => { try { return [JSON.parse(
 const patchCommand = "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: new file.mjs\n+new\n*** Update File: existing.mjs\n@@\n-old\n+new\n*** Delete File: obsolete.mjs\n*** End Patch\nPATCH";
 const patchFiles = [{ path: "new file.mjs", kind: "add" }, { path: "existing.mjs", kind: "update" }, { path: "obsolete.mjs", kind: "delete" }];
 
+test("PLAN parser uses the last block and stops at prose", async () => {
+  const { parsePlanBlock } = await import("../scripts/lane-dashboard.mjs");
+  assert.deepEqual(parsePlanBlock("PLAN:\n- [ ] Old\n\nUpdate\nPLAN:\r\n- [x] Inspect\r\n- [ ] Fix <file>\r\nDone talking\n- [x] Not part of plan"), [
+    { text: "Inspect", done: true }, { text: "Fix <file>", done: false },
+  ]);
+  assert.deepEqual(parsePlanBlock("PLAN:\n- [X] Done\n"), [{ text: "Done", done: true }]);
+  assert.deepEqual(parsePlanBlock("Mention PLAN: inline\n- [ ] Not a plan"), []);
+  assert.deepEqual(parsePlanBlock(undefined), []);
+});
+
+test("lane detail derives the latest message plan unless a native todo event exists", async () => {
+  const file = path.join(root, "older.events.jsonl");
+  const events = [
+    { item: { type: "agent_message", text: "PLAN:\n- [ ] Inspect\n- [ ] Verify" } },
+    { item: { type: "agent_message", text: "PLAN:\n- [x] Inspect\n- [ ] Verify" } },
+    { item: { type: "agent_message", text: "Still working" } },
+  ];
+  await fs.writeFile(file, events.map(JSON.stringify).join("\n") + "\n");
+  try {
+    assert.deepEqual((await get("/api/lanes/older")).derived_plan, [{ text: "Inspect", done: true }, { text: "Verify", done: false }]);
+    await fs.appendFile(file, JSON.stringify({ item: { type: "todo_list", items: [] } }) + "\n");
+    assert.deepEqual((await get("/api/lanes/older")).derived_plan, []);
+  } finally { await fs.rm(file); }
+});
+
+test("Plan tab renders derived checkboxes safely and native todos take precedence", async () => {
+  const html = await fs.readFile(path.join(here, "../assets/dashboard.html"), "utf8");
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)[1].split('element("lanes").addEventListener')[0];
+  const panel = { innerHTML: "", scrollTop: 0, scrollLeft: 0, querySelectorAll: () => [] };
+  const context = vm.createContext({ document: { getElementById: () => panel } });
+  vm.runInContext(script + '; state = newState(); selected = "plan"; state.detail = {derived_plan:[{text:"Inspect <file>",done:true},{text:"Verify",done:false}]}; drawContent();', context);
+  assert.match(panel.innerHTML, /checked[^]*Inspect &lt;file&gt;/);
+  assert.match(panel.innerHTML, /Verify/);
+  vm.runInContext('ingest([{item:{type:"todo_list",items:[{text:"Native",completed:false}]}}]); drawContent();', context);
+  assert.match(panel.innerHTML, /Native/);
+  assert.doesNotMatch(panel.innerHTML, /Inspect/);
+});
+
 test("apply_patch parser extracts add, update and delete headers only inside patches", async () => {
   const { parseApplyPatchFiles } = await import("../scripts/lane-dashboard.mjs");
   assert.deepEqual(parseApplyPatchFiles(patchCommand), patchFiles);

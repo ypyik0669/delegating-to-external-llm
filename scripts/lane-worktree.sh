@@ -2,7 +2,7 @@
 # lane-worktree.sh — one git worktree per parallel lane, so lanes never touch each other's files,
 # plus a pre-merge conflict check so problems surface before anything lands on the main tree.
 #
-#   bash lane-worktree.sh create <slug>   # .lanes/<slug> on branch lane/<slug> from HEAD; prints the path
+#   bash lane-worktree.sh create <slug> [--no-install]   # prints path, then dependency installation status
 #   bash lane-worktree.sh check  <slug>   # commits the lane's work, dry-run merge; lists conflicting files; exit 1 on conflict
 #   bash lane-worktree.sh merge  <slug>   # check, then merge --no-commit (you commit), then remove worktree + branch
 #                                         # a dirty main tree (e.g. an earlier lane already merged) is stashed around the merge
@@ -14,6 +14,18 @@
 # onto lane/<slug> so the merge has something to merge. On Windows, create enables core.longpaths.
 set -u
 cmd="${1:-}"; slug="${2:-}"
+NO_INSTALL=0
+if [ "$cmd" = create ]; then
+  shift; slug=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --no-install) NO_INSTALL=1 ;;
+      --*) echo "lane-worktree: unknown flag $1" >&2; exit 1 ;;
+      *) if [ -n "$slug" ]; then echo "lane-worktree: only one slug allowed" >&2; exit 1; fi; slug="$1" ;;
+    esac
+    shift
+  done
+fi
 [ -n "$cmd" ] || { sed -n '2,13p' "$0"; exit 1; }
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "lane-worktree: not inside a git repo" >&2; exit 1; }
 cd "$ROOT" || exit 1
@@ -46,6 +58,32 @@ commit_lane() { # commit uncommitted work inside the worktree so the branch carr
   fi
 }
 
+install_deps() {
+  local directory="$1" tool label started elapsed result
+  local args=()
+  if [ "$NO_INSTALL" -eq 1 ]; then echo "deps: skipped (--no-install)"; return 0; fi
+  if [ -f "$directory/package-lock.json" ]; then
+    tool=npm; label="npm ci"; args=(ci --prefer-offline --no-audit --no-fund)
+  elif [ -f "$directory/bun.lock" ] || [ -f "$directory/bun.lockb" ]; then
+    tool=bun; label="bun install"; args=(install --frozen-lockfile)
+  elif [ -f "$directory/pnpm-lock.yaml" ]; then
+    tool=pnpm; label="pnpm install"; args=(install --frozen-lockfile --offline)
+  elif [ -f "$directory/yarn.lock" ]; then
+    tool=yarn; label="yarn install"; args=(install --frozen-lockfile)
+  else
+    echo "deps: skipped (no supported lockfile)"; return 0
+  fi
+  if ! command -v "$tool" >/dev/null 2>&1; then echo "deps: skipped ($tool not found)"; return 0; fi
+  started=$(date +%s)
+  (cd "$directory" && "$tool" "${args[@]}") >&2; result=$?
+  if [ "$result" -ne 0 ] && [ "$tool" = pnpm ]; then
+    (cd "$directory" && pnpm install --frozen-lockfile) >&2; result=$?
+  fi
+  elapsed=$(( $(date +%s) - started ))
+  if [ "$result" -ne 0 ]; then echo "deps: failed ($label; exit $result)"; return "$result"; fi
+  echo "deps: installed via $label (${elapsed}s)"
+}
+
 case "$cmd" in
   create)
     need_slug; ensure_exclude; mkdir -p "$LANES"
@@ -54,6 +92,7 @@ case "$cmd" in
     if ! git rev-parse --verify -q HEAD >/dev/null; then echo "lane-worktree: repo has no commits yet; commit first" >&2; exit 1; fi
     git worktree add -q "$LANES/$slug" -b "lane/$slug" HEAD || exit 1
     if pwd -W >/dev/null 2>&1; then (cd "$LANES/$slug" && pwd -W); else echo "$LANES/$slug"; fi
+    install_deps "$LANES/$slug" || exit $?
     ;;
   check)
     need_slug

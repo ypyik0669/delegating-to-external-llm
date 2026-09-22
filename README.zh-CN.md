@@ -85,6 +85,10 @@ node ~/.claude/plugins/…/delegating-to-external-llm/scripts/setup.mjs   # 或�
 
 ### 看进度
 
+实现通道第一条消息以 `PLAN:` 开始，列出 3–8 个 `- [ ]` 步骤；完成步骤后再次输出更新后的计划，用 `- [x]` 标记。Codex exec 没有 `update_plan` 工具；没有原生 todo 事件时，仪表盘 Plan 页显示最新消息中的清单。
+
+分析通道默认超时为 1800 秒，可用 `--timeout` 覆盖。用 `lane-run.mjs --resume <thread-id> --analyze --task-file <new-task.md>` 或 `--resume <thread-id> --spec <new-spec.md>` 继续同一会话；实现续跑仍有文件围栏和独立验证。分析通道的 `--wait` 报告在超时后也保留 `RESUME:` 和 `BRIEF_PATH:`。不指定 `--out` 时，简报保存在通道工作目录的 `.lane-scratch/` 下。
+
 默认在同一条消息中为每条通道启动一个 `codex-implementer` 子代理，不超过并发上限（默认 2）。Claude Code 会显示各子代理条目：先原样显示 `SLUG:` 和 `WATCH:`，每段等待结束后显示原样的 `RUNNING` 行，最后返回完整的 LANE REPORT。薄包装子代理先运行 `lane-run.mjs --detach`，再循环执行 `--wait <slug> --timeout 540`，每次等待不超过九分钟；不读源码、不修代码、不用 `sleep` 轮询。`codex-analyst` 的分析通道也使用此流程。主会话只有显式 `--batch` 才能使用后台 Bash。
 
 每次派发回复都包含完整的 `WATCH:` 行。在终端执行该前缀后面的命令，即可看到每两秒刷新的阶段、耗时（如 `12m 05s`）、token 和最后消息；`--dir` 指向本次启动的状态目录。`/delegating-to-external-llm:status` 在相同状态目录环境下显示一次原样快照。分离运行会在状态目录保存日志和报告：等待完成返回报告（退出码 0/5/2），达到等待时限返回 `RUNNING`（10），30 秒仍无状态文件返回 `MISSING`（4）。已知会话 ID 时，报告附带 `RESUME: codex resume <thread-id>`。
@@ -262,6 +266,12 @@ OBJECTIVE / CHANGES / VERIFIED（通道自己重跑，计数原样）/ MODEL SAI
 空 diff 一律是 `refused`，绝不算 `complete`。CLI 缺失或中转挂了是 `unavailable`。改了 spec FILES 之外的文件是 `SCOPE VIOLATION`，通道报 `partial`。任何通道都不会退回到 Claude 自己写代码。
 
 ### 并行任务：一个通道一个 worktree
+
+建议每条通道完成后立即串行合并，不必等待其他通道结束；其他通道仍在运行时合并也是安全的。越界写入检查只依据该通道自己的事件，不会把主工作树的其他改动误认为它的写入。有歧义的路径报告为 `WROTE OUTSIDE WORKTREE (not moved)`，不改动两边；被 Git 忽略的依赖和通道产物绝不搬移或删除。
+
+创建 worktree 时根据锁文件在其中独立安装依赖：npm ci、Bun/Yarn 冻结锁文件安装，pnpm 先冻结/离线安装，失败后在线重试；不使用符号链接或 junction。stdout 第一行仍是路径，第二行显示 `deps: installed via npm ci (Ns)` 或跳过原因。`create <slug> --no-install` 可主动跳过；缺工具或锁文件也跳过，安装失败则保留 worktree 并返回非零退出码。
+
+使用本插件开发自身时，将 `scripts/`、`templates/` 和 `codex-home/` 一起复制到隔离目录，保持同级布局。在目标 worktree 中运行复制后的驱动，或将 `LANE_RUN_LANE_SH` 指向复制后的 `scripts/codex-lane.sh`；辅助脚本按脚本所在位置解析，而不是按目标仓库解析。若要使用复制后的仪表盘，还需复制 `assets/dashboard.html`，或设置 `LLM_DASHBOARD=0`。
 
 默认最多 **2 个并发通道**（通过 `--batch --concurrency` 或环境变量 `LLM_LANE_CONCURRENCY` 调整），分析通道也计入，因此单独启动的通道也要统一控制并发；此前四个 codex 会话同时运行导致中转超时。
 

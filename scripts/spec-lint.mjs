@@ -14,7 +14,8 @@ const REQUIRED = ["OBJECTIVE", "FILES", "INTERFACES", "CONSTRAINTS", "VERIFICATI
 const OPTIONAL = ["MODEL", "PROTOCOL", "WORKTREE"];
 const EFFORTS = ["low", "medium", "high", "xhigh"];
 
-export function lintSpec(text, root = process.cwd()) {
+export function lintSpec(text, options = {}) {
+  const cwd = typeof options === "string" ? options : options.cwd || process.cwd();
   const problems = [];
   const sections = {};
   let cur = null;
@@ -29,6 +30,8 @@ export function lintSpec(text, root = process.cwd()) {
   }
   const reasoning = (sections.REASONING || "").trim().split(/\s+/)[0]?.toLowerCase();
   if (reasoning && !EFFORTS.includes(reasoning)) problems.push(`REASONING: "${reasoning}" is not one of ${EFFORTS.join("|")}`);
+  const wt = (sections.WORKTREE || "").trim();
+  const root = path.resolve(cwd, wt || ".");
 
   const files = (sections.FILES || "").split(/[\n,]/).map((s) => s.trim().replace(/^[-*]\s*/, "")).filter((s) => s && !/^(none|n\/a)$/i.test(s));
   if (sections.FILES !== undefined && !files.length) problems.push("FILES: list at least one path (or the lane cannot fence its edits)");
@@ -46,8 +49,7 @@ export function lintSpec(text, root = process.cwd()) {
 
   const proto = (sections.PROTOCOL || "").trim();
   if (proto && !/^(four-phase|spec)$/i.test(proto)) problems.push(`PROTOCOL: "${proto}" is not four-phase|spec`);
-  const wt = (sections.WORKTREE || "").trim();
-  if (wt && !fs.existsSync(wt)) problems.push(`WORKTREE: "${wt}" does not exist (create it with scripts/lane-worktree.sh create <slug>)`);
+  if (wt && !fs.existsSync(root)) problems.push(`WORKTREE: "${wt}" does not exist (create it with scripts/lane-worktree.sh create <slug>)`);
   const ver = (sections.VERIFICATION || "").trim();
   if (ver && !/[`$]|\b(npm|node|pytest|go|cargo|make|dotnet|mvn|gradle|yarn|pnpm|bun|test|tsc|lint)\b/i.test(ver)) problems.push("VERIFICATION: no runnable command found — name the exact command(s)");
 

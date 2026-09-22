@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.8.3
+
+### Fixed
+- Attribute main-tree stray writes only to the lane's own `file_change` and successful `apply_patch` events. Recover only safe, unchanged destinations with a clean baseline; report ambiguous command/path evidence as `WROTE OUTSIDE WORKTREE (not moved)`. Never stash unrelated main-tree changes or clean ignored dependencies and lane artifacts. Finished lanes can be merged while others run.
+- Default analyze lanes to 1800 seconds; support `--resume <thread-id>` with new analyze tasks or implementation specs, retaining fences and independent implementation verification. Analyze reports and waits include the brief path and session resume command, including after timeout.
+- Replace the unavailable `update_plan` tool requirement with a first-message `PLAN:` checklist and later updated blocks. The dashboard exposes `derived_plan` and renders the latest message checklist when native todo events are absent.
+- Install worktree dependencies from npm, Bun, pnpm or Yarn lockfiles without symlinks/junctions; support `--no-install`, missing-tool/lockfile notes and pnpm offline-to-online fallback.
+- Resolve spec FILES against WORKTREE, including relative WORKTREE paths, consistently with the driver.
+- Snapshot fenced file contents in the lane cwd, including ignored/non-Git files, and verify actual changes instead of trusting false refusals. Resolve helpers from the copied script directory; document copying `scripts/`, `templates/` and `codex-home/` together for self-development.
+
 ## 2.8.2
 
 ### Fixed

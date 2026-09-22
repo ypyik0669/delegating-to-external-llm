@@ -85,6 +85,10 @@ Then open Claude Code in any repo and describe a task the way you always did. No
 
 ### Watching progress
 
+Implementation lanes begin with a `PLAN:` block containing 3–8 `- [ ]` steps and emit updated blocks with `- [x]` as steps complete. Codex exec does not expose `update_plan`; the dashboard's Plan tab uses the latest message checklist when native todo events are absent.
+
+Analyze lanes default to 1800 seconds (`--timeout` overrides). Continue a session with `lane-run.mjs --resume <thread-id> --analyze --task-file <new-task.md>` or `--resume <thread-id> --spec <new-spec.md>`; spec continuations keep the file fence and independent verification. Analyze `--wait` reports include `RESUME:` and `BRIEF_PATH:` even after timeout. Without `--out`, briefs go under the lane cwd's `.lane-scratch/`.
+
 By default, Claude launches one `codex-implementer` subagent per lane in the same message, up to the concurrency cap (2). Claude Code shows each subagent's entry: first its `SLUG:` and `WATCH:` lines, then verbatim `RUNNING` lines after each wait slice, and finally the unchanged LANE REPORT. The thin wrapper starts `lane-run.mjs --detach`, then repeats `--wait <slug> --timeout 540`; it never reads source, fixes code or polls with `sleep`. `codex-analyst` uses the same detached flow for analysis. Only explicit `--batch` runs may use background Bash in the main session.
 
 Every dispatch reply includes the exact `WATCH:` line. Run the command after that prefix in your terminal for a two-second-refresh table of phase, elapsed time (`12m 05s`), tokens and last message. It points to the launch's status directory with `--dir`. `/delegating-to-external-llm:status` shows a single verbatim snapshot with the same status-directory environment. Detached runs save logs and reports alongside status files; wait returns reports on completion (exit 0/5/2), `RUNNING` at its deadline (10), or `MISSING` after 30 seconds without a status file (4). Reports include a `RESUME: codex resume <thread-id>` line when known.
@@ -262,6 +266,12 @@ OBJECTIVE / CHANGES / VERIFIED (re-run by the lane, verbatim counts) / MODEL SAI
 An empty diff is `refused`, never `complete`. A missing CLI or dead relay is `unavailable`. A file changed outside the spec's FILES is a `SCOPE VIOLATION` and the lane reports `partial`. No lane ever falls back to Claude writing the code.
 
 ### Parallel tasks — one worktree per lane
+
+Merge each completed lane serially while other lanes keep running; this is safe and recommended. The guard attributes stray writes from the running lane's own events, not unrelated changes in the main tree. Ambiguous evidence is reported as `WROTE OUTSIDE WORKTREE (not moved)` and left alone; ignored dependency/artifact directories are never moved or deleted.
+
+Worktree creation installs dependencies locally from the lockfile (npm ci, frozen Bun/Yarn, or pnpm frozen/offline with online fallback), without symlinks or junctions. The first stdout line remains the path; the second reports `deps: installed via npm ci (Ns)` or a skip reason. Use `create <slug> --no-install` to skip. Missing tools/lockfiles skip; installation errors exit nonzero and retain the worktree.
+
+To run lanes on this plugin itself, copy `scripts/`, `templates/` and `codex-home/` together, retaining their sibling layout. Run the copied driver in the target worktree, or set `LANE_RUN_LANE_SH` to the copied `scripts/codex-lane.sh`; helpers follow the script location, not the target repo. For the copied dashboard, also copy `assets/dashboard.html` or set `LLM_DASHBOARD=0`.
 
 The default is **2 concurrent lanes** (`--batch --concurrency`, or env `LLM_LANE_CONCURRENCY`); analyze lanes count too, so coordinate separate launches within that budget—four concurrent codex sessions timed out the relay.
 

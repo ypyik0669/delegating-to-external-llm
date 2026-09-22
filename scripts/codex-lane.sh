@@ -200,7 +200,6 @@ trap 'rm -f "$PROMPT" "$FINAL" "$ERRLOG" "$EVENTS" "$EVENTS.summary" "$HASH_BEFO
 
 case "$MODE" in
   implement)
-    if [ -z "$RESUME" ]; then
       {
         cat <<PREAMBLE
 This task runs in a dedicated implementation lane on the model and reasoning
@@ -219,15 +218,16 @@ Rules for this lane:
 - Run the verification command and include its actual output in your final
   message.
 - List any judgment calls you made that the spec left open.
-- Before the first edit, call update_plan with 3-8 concrete steps; update it as each step completes.
-  The plan is displayed to the user live.
+- Start your first message with a PLAN: block followed by 3-8 - [ ] checklist items.
+  When items complete, emit an updated PLAN: block in a later message, using - [x]
+  for completed items. Keep it cheap: one line per item. Do not call update_plan.
+  The dashboard displays the latest block as your live plan.
+${FILES:+- The enforced FILES fence for this run is: $FILES}
 
 PREAMBLE
         cat "$SPEC"
       } > "$PROMPT"
-    else
-      cp "$SPEC" "$PROMPT"
-    fi ;;
+    ;;
   analyze)
     TASK_TEXT="$TASK" node -e '
 const fs=require("fs");
@@ -257,7 +257,7 @@ REVIEW
 esac
 
 # --- snapshot tree state ---------------------------------------------------------
-have_git=0; linked=0; MAIN_ROOT=""; MAIN_BEFORE=""
+have_git=0
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   have_git=1
   EXCLUDE=$(git rev-parse --git-path info/exclude)
@@ -267,15 +267,11 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   changed_paths() { { git diff HEAD --name-only; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u; }
   BEFORE=$(snapshot)
   BEFORE_PATHS=$(changed_paths)
-  node -e 'import(require("node:url").pathToFileURL(process.argv[2]).href).then(({snapshotFiles})=>require("node:fs").writeFileSync(process.argv[3],JSON.stringify(snapshotFiles(process.cwd()))));' snapshot "$HERE/lane-run.mjs" "$HASH_BEFORE"
-  # linked worktree? then also watch the main working tree for stray writes
-  COMMON=$(git rev-parse --git-common-dir 2>/dev/null)
-  GITDIR=$(git rev-parse --git-dir 2>/dev/null)
-  if [ -n "$COMMON" ] && [ "$COMMON" != "$GITDIR" ] && [ "$COMMON" != ".git" ]; then
-    linked=1
-    MAIN_ROOT=$(cd "$COMMON/.." && pwd)
-    MAIN_BEFORE=$( { git -C "$MAIN_ROOT" diff HEAD --name-only; git -C "$MAIN_ROOT" ls-files --others --exclude-standard; } 2>/dev/null | sort -u)
-  fi
+fi
+if [ "$READONLY_MODE" -eq 0 ] && { [ "$have_git" -eq 1 ] || [ -n "$FILES" ]; }; then
+  node -e 'import(require("node:url").pathToFileURL(process.argv[2]).href).then(({snapshotLane})=>require("node:fs").writeFileSync(process.argv[3],JSON.stringify(snapshotLane(process.cwd(),process.argv[4].split(",").filter(Boolean)))));' snapshot "$HERE/lane-run.mjs" "$HASH_BEFORE" "$FILES" || { echo "STATUS: failed"; echo "REASON: could not snapshot lane files"; exit 2; }
+else
+  printf '%s\n' '{"lane":null,"main":{},"mainRoot":null}' > "$HASH_BEFORE"
 fi
 
 # --- access flags -------------------------------------------------------------
@@ -378,7 +374,11 @@ case "$MODE" in
       capture_codex codex exec resume "${COMMON_ARGS[@]}" "$RESUME" - < "$PROMPT"
     fi ;;
   analyze)
-    capture_codex codex exec "${COMMON_ARGS[@]}" --cd "$ROOT" - < "$PROMPT" ;;
+    if [ -n "$RESUME" ]; then
+      capture_codex codex exec resume "${COMMON_ARGS[@]}" "$RESUME" - < "$PROMPT"
+    else
+      capture_codex codex exec "${COMMON_ARGS[@]}" --cd "$ROOT" - < "$PROMPT"
+    fi ;;
   review)
     capture_codex codex exec "${COMMON_ARGS[@]}" --cd "$ROOT" - < "$PROMPT" ;;
 esac
@@ -414,6 +414,21 @@ if [ "$RC" -eq 124 ] || [ "$RC" -eq 137 ]; then
   log_usage timeout "$TOK_IN" "$TOK_CACHED" "$TOK_OUT" "$SESSION"; exit 4
 fi
 
+EXIT=0
+if [ "$READONLY_MODE" -eq 0 ] && grep -Eq '"type"[[:space:]]*:[[:space:]]*"(file_change|command_execution)"' "$EVENTS"; then
+  STRAY_REPORT=$(node -e '
+const fs=require("node:fs");
+import(require("node:url").pathToFileURL(process.argv[2]).href).then(({recoverStrayWrites})=>{
+  const before=JSON.parse(fs.readFileSync(process.argv[3],"utf8"));
+  const events=fs.readFileSync(process.argv[4],"utf8").split(/\r?\n/).flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}});
+  const result=recoverStrayWrites(process.cwd(),events,before);
+  if(result.moved.length) console.log("WROTE OUTSIDE WORKTREE: "+result.moved.join(" ")+"\n(moved those changes from the main tree into this worktree)");
+  if(result.notMoved.length) console.log("WROTE OUTSIDE WORKTREE (not moved): "+result.notMoved.join(" "));
+});' recover "$HERE/lane-run.mjs" "$HASH_BEFORE" "$EVENTS") || { echo "STATUS: failed"; echo "REASON: stray-write recovery failed; inspect both trees"; exit 2; }
+  if [ -n "$STRAY_REPORT" ]; then printf '%s\n' "$STRAY_REPORT"; fi
+  if [[ "$STRAY_REPORT" == *"not moved"* ]]; then EXIT=5; fi
+fi
+
 NOISE='^(mcp[: ]|mcp startup|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z +(ERROR|WARN|INFO) )'
 ERRTXT=$( { grep -v -E "$NOISE" "$ERRLOG"; printf '%s\n' "$EVENT_ERRORS"; } | grep -i -E 'error|not supported|requires a newer|login|auth|unexpected status|connection|overloaded' | tail -20)
 if [ "$RC" -eq 0 ] && printf '%s' "$ERRTXT" | grep -q -i -E 'not supported when using|requires a newer version|not logged in|unauthori[sz]ed|unexpected status|invalid.*api key'; then RC=99; fi
@@ -438,8 +453,13 @@ if [ "$READONLY_MODE" -eq 1 ]; then
       if [ -n "$STRAYP" ]; then
         echo "STRAY WRITES IN READ-ONLY MODE (reverted): $(printf '%s' "$STRAYP" | tr '\n' ' ')"
         while IFS= read -r stray_path; do
-          git checkout -q -- "$stray_path" 2>/dev/null
-          git clean -fq -- "$stray_path" 2>/dev/null
+          case "/$stray_path/" in */node_modules/*|*/.lanes/*|*/.lane-scratch/*|*/.git/*) continue ;; esac
+          git check-ignore --no-index -q -- "$stray_path" && continue
+          if git ls-files --error-unmatch -- "$stray_path" >/dev/null 2>&1; then
+            git checkout -q -- "$stray_path" 2>/dev/null
+          elif [ -f "$stray_path" ] && [ ! -L "$stray_path" ]; then
+            rm -f -- "$stray_path"
+          fi
         done <<< "$STRAYP"
       fi
     fi
@@ -448,23 +468,8 @@ if [ "$READONLY_MODE" -eq 1 ]; then
   echo "STATUS: ran"; status_write "done ran" 0; log_usage ran "$TOK_IN" "$TOK_CACHED" "$TOK_OUT" "$SESSION"; exit 0
 fi
 
-EXIT=0
-if [ "$have_git" -eq 1 ]; then
-  # stray writes into the main working tree from a linked worktree: move them back here
-  if [ "$linked" -eq 1 ]; then
-    MAIN_AFTER=$( { git -C "$MAIN_ROOT" diff HEAD --name-only; git -C "$MAIN_ROOT" ls-files --others --exclude-standard; } 2>/dev/null | sort -u)
-    STRAY=$(comm -13 <(printf '%s\n' "$MAIN_BEFORE") <(printf '%s\n' "$MAIN_AFTER") | sed '/^$/d')
-    if [ -n "$STRAY" ]; then
-      echo "WROTE OUTSIDE WORKTREE: $(printf '%s' "$STRAY" | tr '\n' ' ')"
-      # shellcheck disable=SC2086
-      if git -C "$MAIN_ROOT" stash push -u -q -- $STRAY 2>/dev/null && git stash pop -q 2>/dev/null; then
-        echo "(moved those changes from the main tree into this worktree)"
-      else
-        echo "(could not move them automatically; inspect $MAIN_ROOT)"
-      fi
-    fi
-  fi
-  NEW_PATHS=$(node -e 'import(require("node:url").pathToFileURL(process.argv[2]).href).then(({snapshotFiles,changedFiles})=>{const before=JSON.parse(require("node:fs").readFileSync(process.argv[3],"utf8"));process.stdout.write(changedFiles(before,snapshotFiles(process.cwd())).join("\n"));});' snapshot "$HERE/lane-run.mjs" "$HASH_BEFORE")
+if [ "$have_git" -eq 1 ] || [ -n "$FILES" ]; then
+  NEW_PATHS=$(node -e 'import(require("node:url").pathToFileURL(process.argv[2]).href).then(({snapshotFiles,changedFiles})=>{const before=JSON.parse(require("node:fs").readFileSync(process.argv[3],"utf8"));process.stdout.write(changedFiles(before.lane,snapshotFiles(process.cwd(),process.argv[4].split(",").filter(Boolean))).join("\n"));});' snapshot "$HERE/lane-run.mjs" "$HASH_BEFORE" "$FILES") || { echo "STATUS: failed"; echo "REASON: could not compare lane files"; exit 2; }
   if [ -z "$NEW_PATHS" ]; then
     echo "STATUS: refused"
     echo "REASON: codex exited 0 but the working tree did not change (see final message above)"

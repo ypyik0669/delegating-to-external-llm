@@ -55,3 +55,17 @@ test("optional PROTOCOL / WORKTREE validated", () => {
   assert.equal(lintSpec(good + "PROTOCOL: four-phase\n", root).ok, true);
   assert.ok(lintSpec(good + "WORKTREE: /definitely/not/here\n", root).problems.some((p) => p.startsWith("WORKTREE")));
 });
+
+test("FILES resolve against cwd without WORKTREE and against WORKTREE when present", () => {
+  const worktree = path.join(root, "lane");
+  fs.mkdirSync(path.join(worktree, "src"), { recursive: true });
+  fs.writeFileSync(path.join(worktree, "src/only-in-lane.ts"), "export {};\n");
+  const spec = good.replace("FILES: add.mjs", "FILES: src/only-in-lane.ts");
+  assert.equal(lintSpec(good, { cwd: root }).ok, true);
+  assert.equal(lintSpec(spec, { cwd: root }).ok, false);
+  assert.equal(lintSpec(spec, { cwd: worktree }).ok, true);
+  assert.equal(lintSpec(spec + `WORKTREE: ${worktree}\n`, { cwd: root }).ok, true);
+  assert.equal(lintSpec(spec + "WORKTREE: lane\n", { cwd: root }).ok, true);
+  assert.equal(lintSpec(spec + "WORKTREE: lane\n", root).ok, true);
+  assert.equal(lintSpec(spec + "WORKTREE: missing\n", { cwd: root }).ok, false);
+});

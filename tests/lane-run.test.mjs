@@ -31,6 +31,7 @@ B="${behaviour.replace(/\\/g, "/")}"
 node -e '
 const fs=require("fs");const b=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
 const args=process.argv.slice(2);const resumed=args.includes("--resume");
+b.args=args;
 if(b.captureTask){const file=args[args.indexOf("--task-file")+1];b.task=fs.readFileSync(file,"utf8");b.args=args;}
 if(b.metadata){const file=args[args.indexOf("--status-file")+1];fs.writeFileSync(file,JSON.stringify({...JSON.parse(fs.readFileSync(file,"utf8")),...b.metadata}));}
 const n=(b.calls=(b.calls||0)+1);fs.writeFileSync(process.argv[1],JSON.stringify(b));
@@ -103,6 +104,43 @@ test("refused lane → refused report with reason", () => {
   assert.match(r.json.reason, /stub says so/);
   assert.equal(r.code, 2);
 });
+test("content changes override a false refused result and still run verification", () => {
+  const result = runDriver(specText(), { status: "refused", fixOnRound: 1 });
+  assert.equal(result.code, 0, result.raw);
+  assert.deepEqual(result.json.changes, ["add.mjs"]);
+  assert.equal(result.json.verified[0].exit, 0);
+});
+
+test("explicit spec resume keeps the new spec and independent verification", () => {
+  const result = runDriver(specText(), { fixOnRound: 1 }, ["--resume", "previous-thread"]);
+  assert.equal(result.code, 0, result.raw);
+  const captured = JSON.parse(fs.readFileSync(behaviour, "utf8"));
+  assert.equal(captured.args[captured.args.indexOf("--resume") + 1], "previous-thread");
+  assert.equal(result.json.verified[0].exit, 0);
+  assert.match(result.json.rounds[0], /^resume/);
+});
+
+test("fenced files have content snapshots even without Git", async () => {
+  const { snapshotFiles, changedFiles } = await import("../scripts/lane-run.mjs");
+  const directory = fs.mkdtempSync(path.join(root, "plain-"));
+  fs.writeFileSync(path.join(directory, "allowed.txt"), "before");
+  const before = snapshotFiles(directory, ["allowed.txt", "new.txt"]);
+  fs.writeFileSync(path.join(directory, "allowed.txt"), "after");
+  fs.writeFileSync(path.join(directory, "new.txt"), "new");
+  assert.deepEqual(changedFiles(before, snapshotFiles(directory, ["allowed.txt", "new.txt"])), ["allowed.txt", "new.txt"]);
+});
+
+test("stray evidence does not treat displayed patch text as an executed patch", async () => {
+  const { strayEvidence } = await import("../scripts/lane-run.mjs");
+  const escaped = path.join(root, "outside.txt");
+  const patch = `*** Begin Patch\n*** Update File: ${escaped}\n@@\n-old\n+new\n*** End Patch`;
+  const event = (command, extra = {}) => ({ type: "item.completed", item: { type: "command_execution", status: "completed", exit_code: 0, command, ...extra } });
+  assert.equal(strayEvidence([event(`cat <<'PATCH'\n${patch}\nPATCH`)], repo).get(escaped), false);
+  assert.equal(strayEvidence([event(`apply_patch <<'PATCH'\n${patch}\nPATCH`)], repo).get(escaped), true);
+  assert.equal(strayEvidence([event(`apply_patch <<'PATCH'\n${patch}\nPATCH`, { exit_code: 1 })], repo).get(escaped), false);
+  assert.equal(strayEvidence([event(`cd "${root}" && echo changed > outside.txt`)], repo).get(root), false);
+});
+
 test("scope violation → partial with gap", () => {
   const r = runDriver(specText(), { fixOnRound: 1, touch: ["extra.txt"], violation: "extra.txt" });
   assert.equal(r.json.status, "partial");
@@ -124,6 +162,16 @@ test("WORKTREE line selects the cwd", () => {
   const r = runDriver(specText(`WORKTREE: ${wt}\n`), { fixOnRound: 1 });
   assert.equal(r.json.status, "refused");
   assert.match(r.json.reason, /WORKTREE/);
+});
+
+test("relative WORKTREE resolves FILES and verification in the same directory", () => {
+  const worktree = path.join(root, "selected-worktree");
+  fs.mkdirSync(path.join(worktree, "src"), { recursive: true });
+  fs.writeFileSync(path.join(worktree, "src/only.txt"), "original\n");
+  const spec = specText("WORKTREE: ../selected-worktree\n").replace("FILES: add.mjs", "FILES: src/only.txt").replace(/VERIFICATION:.*/, 'VERIFICATION: node -e "if(!require(\'fs\').readFileSync(\'src/only.txt\',\'utf8\').includes(\'touched\'))process.exit(1)"');
+  const result = runDriver(spec, { touch: ["src/only.txt"] });
+  assert.equal(result.code, 0, result.raw);
+  assert.deepEqual(result.json.changes, ["src/only.txt"]);
 });
 
 function waitFor(slugs, timeout = 60) {
@@ -249,11 +297,47 @@ printf '%s\\n' '{"type":"thread.started","thread_id":"hash-session"}' '{"type":"
   env.PATH = bin + path.delimiter + inherited;
   fs.appendFileSync(path.join(repo, "add.mjs"), "// pre-existing edit\n");
   for (const allowed of ["add.mjs", "other.mjs"]) {
-    const result = spawnSync("bash", [slash(path.join(here, "../scripts/codex-lane.sh")), "--spec", slash(spec), "--files", allowed, "--timeout", "20"], { cwd: repo, env, encoding: "utf8", windowsHide: true, timeout: 30000 });
+    const result = spawnSync("bash", [slash(path.join(here, "../scripts/codex-lane.sh")), "--spec", slash(spec), "--files", allowed, "--timeout", "20"], { cwd: repo, env, encoding: "utf8", windowsHide: true, timeout: 120000 });
     assert.equal(result.status, allowed === "add.mjs" ? 0 : 5, result.stdout + result.stderr);
     assert.match(result.stdout, /----- changed by this run -----\r?\nadd.mjs/);
     if (allowed !== "add.mjs") assert.match(result.stdout, /SCOPE VIOLATION: add.mjs/);
   }
+});
+
+test("copied plugin helpers detect ignored fenced edits and fence explicit resumes", () => {
+  const copied = path.join(root, "copied-plugin");
+  for (const directory of ["scripts", "templates", "codex-home"]) {
+    fs.mkdirSync(path.join(copied, directory), { recursive: true });
+    for (const entry of fs.readdirSync(path.join(here, "..", directory), { withFileTypes: true })) {
+      if (entry.isFile()) fs.copyFileSync(path.join(here, "..", directory, entry.name), path.join(copied, directory, entry.name));
+    }
+  }
+  const bin = path.join(copied, "bin");
+  fs.mkdirSync(bin);
+  const prompt = path.join(root, "copied-prompt.md");
+  fs.writeFileSync(path.join(bin, "codex"), `#!/usr/bin/env bash
+if [ "$1" = --version ]; then echo stub-codex; exit 0; fi
+cat > "$PROMPT_DUMP"
+printf changed > ignored.txt
+printf '%s\\n' '{"type":"thread.started","thread_id":"continued-session"}' '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}'
+`, { mode: 0o755 });
+  fs.writeFileSync(path.join(repo, ".gitignore"), "ignored.txt\n");
+  fs.writeFileSync(path.join(repo, "ignored.txt"), "before");
+  const spec = path.join(root, "copied-spec.md");
+  fs.writeFileSync(spec, specText().replace("FILES: add.mjs", "FILES: ignored.txt").replace(/VERIFICATION:.*/, 'VERIFICATION: node -e "if(require(\'fs\').readFileSync(\'ignored.txt\',\'utf8\')!==\'changed\')process.exit(1)"'));
+  const env = { ...process.env, HOME: copied.replace(/\\/g, "/"), USERPROFILE: copied, LANE_RUN_LANE_SH: path.join(copied, "scripts/codex-lane.sh"), LANE_CODEX_HOME: copied.replace(/\\/g, "/"), PROMPT_DUMP: prompt.replace(/\\/g, "/"), LLM_BASE: "https://unused.invalid", LLM_KEY: "test", LLM_MODEL: "stub", EVAL_CODEX_DISABLED: "", LLM_USAGE_LOG: path.join(root, "copy-usage.jsonl"), TMPDIR: root.replace(/\\/g, "/"), TMP: root, TEMP: root };
+  const inherited = Object.entries(env).find(([key]) => key.toUpperCase() === "PATH")?.[1] || "";
+  for (const key of Object.keys(env)) if (key.toUpperCase() === "PATH") delete env[key];
+  env.PATH = bin + path.delimiter + inherited;
+  const result = spawnSync(process.execPath, [driver, "--spec", spec, "--resume", "original-thread", "--status-dir", statusDir, "--json", "--timeout", "30"], { cwd: repo, env, encoding: "utf8", timeout: 120000 });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).changes, ["ignored.txt"]);
+  assert.equal(JSON.parse(result.stdout).verified[0].exit, 0);
+  const text = fs.readFileSync(prompt, "utf8");
+  assert.match(text, /WORKING ROOT:/);
+  assert.match(text, /PLAN:/);
+  assert.match(text, /enforced FILES fence.*ignored.txt/);
+  assert.match(text, /OBJECTIVE:/);
 });
 
 test("wait times out with RUNNING and can be called again", () => {
@@ -338,6 +422,32 @@ test("detached analyze preserves the full brief in a LANE REPORT", () => {
   assert.equal(waited.status, 0, waited.stdout + waited.stderr);
   assert.match(waited.stdout, /^LANE REPORT\n/);
   assert.match(waited.stdout, /BRIEF: stub analysis/);
+});
+
+for (const detached of [false, true]) {
+  test(`analyze resumes with 1800s default and reports timed-out brief: detached=${detached}`, () => {
+    const out = path.join(root, `timeout-${detached}.md`);
+    fs.writeFileSync(behaviour, JSON.stringify({ captureTask: true, status: "timeout", say: "partial brief" }));
+    const result = spawnSync(process.execPath, [driver, "--analyze", "continue analysis", "--resume", "previous-analysis", "--out", out, "--status-dir", statusDir, ...(detached ? ["--detach"] : [])], { cwd: repo, encoding: "utf8", env: { ...process.env, LANE_RUN_LANE_SH: stub } });
+    assert.equal(result.status, detached ? 0 : 2, result.stdout + result.stderr);
+    const waited = waitFor([`timeout-${detached}`]);
+    assert.equal(waited.status, 2, waited.stdout + waited.stderr);
+    assert.match(waited.stdout, /STATUS: timeout/);
+    assert.match(waited.stdout, /RESUME: codex resume stub-session-1/);
+    assert.ok(waited.stdout.includes(`BRIEF_PATH: ${out}`), waited.stdout);
+    const captured = JSON.parse(fs.readFileSync(behaviour, "utf8"));
+    assert.equal(captured.args[captured.args.indexOf("--timeout") + 1], "1800");
+    assert.equal(captured.args[captured.args.indexOf("--resume") + 1], "previous-analysis");
+    assert.equal(captured.task, "continue analysis");
+  });
+}
+
+test("analyze explicit timeout overrides 1800s", () => {
+  fs.writeFileSync(behaviour, JSON.stringify({ captureTask: true }));
+  const result = spawnSync(process.execPath, [driver, "--analyze", "inspect", "--timeout", "47", "--status-dir", statusDir], { cwd: repo, encoding: "utf8", env: { ...process.env, LANE_RUN_LANE_SH: stub } });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const captured = JSON.parse(fs.readFileSync(behaviour, "utf8"));
+  assert.equal(captured.args[captured.args.indexOf("--timeout") + 1], "47");
 });
 
 test("detached batch queues all slugs and respects --cwd", () => {

@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const scratch = fs.mkdtempSync(path.join(root, "tests", ".codex-home-"));
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "dtel-codex-home-"));
 test.after(() => fs.rmSync(scratch, { recursive: true, force: true }));
 const slash = (p) => p.replace(/\\/g, "/");
 const native = (p) => process.platform === "win32" ? p.replace(/^\/([a-z])\//i, "$1:/") : p;
@@ -24,7 +25,11 @@ function fixture(setting) {
     `LLM_BASE=https://unused.invalid\nLLM_KEY=test-key\n${setting === undefined ? "" : `LLM_CODEX_HOME=${setting}\n`}`);
   fs.writeFileSync(path.join(bin, "codex"), `#!/usr/bin/env bash
 if [ "$1" = --version ]; then echo stub-codex; exit 0; fi
+if [ -n "$ARGS_DUMP" ]; then printf '%s\\n' "$@" > "$ARGS_DUMP"; fi
 if [ -n "$PROMPT_DUMP" ]; then cat > "$PROMPT_DUMP"; fi
+if [ -n "$LANE_ACTIONS" ]; then
+  node -e 'const fs=require("fs");const actions=JSON.parse(process.env.LANE_ACTIONS);for(const change of actions.writes||[]){fs.mkdirSync(require("path").dirname(change.path),{recursive:true});fs.writeFileSync(change.path,change.text);}for(const event of actions.events||[])console.log(JSON.stringify(event));'
+fi
 if [ "$WRITE_SCRATCH" = 1 ]; then
   mkdir -p .lane-scratch/nested
   printf 'brief\\n' > .lane-scratch/nested/brief.md
@@ -123,6 +128,18 @@ for (const mode of ["--analyze", "--review"]) {
   });
 }
 
+test("analyze resume invokes the original session with a fresh read-only task", () => {
+  const fixtureValue = fixture();
+  fixtureValue.env.ARGS_DUMP = slash(path.join(fixtureValue.home, "args.txt"));
+  fixtureValue.env.PROMPT_DUMP = slash(path.join(fixtureValue.home, "prompt.md"));
+  const result = run(fixtureValue, ["--analyze", "new continuation task", "--resume", "analysis-thread"]);
+  assert.equal(result.status, 0, result.raw);
+  const args = fs.readFileSync(fixtureValue.env.ARGS_DUMP, "utf8");
+  assert.match(args, /^exec\nresume\n/);
+  assert.match(args, /\nanalysis-thread\n-\n/);
+  assert.match(fs.readFileSync(fixtureValue.env.PROMPT_DUMP, "utf8"), /new continuation task[\s\S]*read-only by contract/);
+});
+
 test("default private home is created and seeded byte-for-byte", () => {
   const f = fixture();
   const target = path.join(f.home, ".claude", "llm-codex-home");
@@ -130,6 +147,76 @@ test("default private home is created and seeded byte-for-byte", () => {
   assert.deepEqual(fs.readFileSync(path.join(target, "config.toml")), fs.readFileSync(path.join(root, "codex-home/config.toml")));
   assert.match(fs.readFileSync(path.join(target, "config.toml"), "utf8"), /^model_reasoning_summary = "concise"$/m);
 });
+
+function linkedFixture() {
+  const fixtureValue = fixture();
+  const main = fixtureValue.cwd;
+  const git = (...args) => {
+    const result = spawnSync("git", args, { cwd: main, env: fixtureValue.env, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  };
+  git("init", "-q");
+  git("config", "core.autocrlf", "false");
+  fs.writeFileSync(path.join(main, "allowed.txt"), "original\n");
+  fs.writeFileSync(path.join(main, ".gitignore"), "node_modules/\n.lanes/\n.lane-scratch/\nignored.txt\n");
+  git("add", "-A");
+  git("-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture");
+  fixtureValue.cwd = path.join(fixtureValue.home, "lane");
+  git("worktree", "add", "-qb", "lane", fixtureValue.cwd);
+  const spec = path.join(fixtureValue.home, "spec.md");
+  fs.writeFileSync(spec, "OBJECTIVE: update allowed.txt\nFILES: allowed.txt\n");
+  return { ...fixtureValue, main, spec };
+}
+
+test("main-tree changes by someone else are untouched and are not stray writes", () => {
+  const fixtureValue = linkedFixture();
+  const writes = [
+    { path: path.join(fixtureValue.cwd, "allowed.txt"), text: "lane\n" },
+    { path: path.join(fixtureValue.main, "merged.txt"), text: "another lane\n" },
+    { path: path.join(fixtureValue.main, "node_modules/keep.txt"), text: "dependency\n" },
+  ];
+  fixtureValue.env.LANE_ACTIONS = JSON.stringify({ writes });
+  const result = run(fixtureValue, ["--spec", slash(fixtureValue.spec), "--files", "allowed.txt"]);
+  assert.equal(result.status, 0, result.raw);
+  assert.doesNotMatch(result.stdout, /WROTE OUTSIDE WORKTREE/);
+  for (const change of writes) assert.equal(fs.readFileSync(change.path, "utf8"), change.text);
+  assert.equal(fs.existsSync(path.join(fixtureValue.cwd, "merged.txt")), false);
+});
+
+for (const evidence of ["file_change", "apply_patch"]) {
+  test(`main-tree write attributed by ${evidence} is recovered without a stash`, () => {
+    const fixtureValue = linkedFixture();
+    const file = slash(path.join(fixtureValue.main, "allowed.txt"));
+    const item = evidence === "file_change"
+      ? { type: "file_change", status: "completed", changes: [{ path: file, kind: "update" }] }
+      : { type: "command_execution", status: "completed", exit_code: 0, command: `apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: ${file}\n@@\n-original\n+lane\n*** End Patch\nPATCH` };
+    fixtureValue.env.LANE_ACTIONS = JSON.stringify({ writes: [{ path: file, text: "lane\n" }], events: [{ type: "item.completed", item }] });
+    const result = run(fixtureValue, ["--spec", slash(fixtureValue.spec), "--files", "allowed.txt"]);
+    assert.equal(result.status, 0, result.raw);
+    assert.match(result.stdout, /WROTE OUTSIDE WORKTREE: allowed.txt/);
+    assert.equal(fs.readFileSync(file, "utf8"), "original\n");
+    assert.equal(fs.readFileSync(path.join(fixtureValue.cwd, "allowed.txt"), "utf8"), "lane\n");
+  });
+}
+
+for (const scenario of ["ignored", "dirty", "command", "destination"]) {
+  test(`ambiguous ${scenario} stray is reported but neither tree is changed by recovery`, () => {
+    const fixtureValue = linkedFixture();
+    const relative = scenario === "ignored" ? "node_modules/keep.txt" : "allowed.txt";
+    const file = slash(path.join(fixtureValue.main, relative));
+    if (scenario === "dirty") fs.writeFileSync(file, "user edit\n");
+    const writes = [{ path: file, text: "external lane write\n" }, { path: path.join(fixtureValue.cwd, "allowed.txt"), text: "local lane write\n" }];
+    const item = scenario === "command"
+      ? { type: "command_execution", status: "completed", exit_code: 0, cwd: slash(fixtureValue.main), command: `echo changed > "${file}"` }
+      : { type: "file_change", status: "completed", changes: [{ path: file, kind: "update" }] };
+    if (scenario !== "destination") writes[1] = { path: path.join(fixtureValue.cwd, "new.txt"), text: "new\n" };
+    fixtureValue.env.LANE_ACTIONS = JSON.stringify({ writes, events: [{ type: "item.completed", item }] });
+    const result = run(fixtureValue, ["--spec", slash(fixtureValue.spec), "--files", "allowed.txt,new.txt"]);
+    assert.equal(result.status, 5, result.raw);
+    assert.match(result.stdout, /WROTE OUTSIDE WORKTREE \(not moved\):/);
+    for (const change of writes) assert.equal(fs.readFileSync(change.path, "utf8"), change.text);
+  });
+}
 
 test("private home retains existing config and follows the user's original model", () => {
   const f = fixture("private");

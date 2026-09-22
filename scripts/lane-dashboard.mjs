@@ -44,6 +44,19 @@ function derivedPatchFiles(item) {
   return parseApplyPatchFiles(item.command).map((file) => completed ? file : { ...file, kind: "failed" });
 }
 
+export function parsePlanBlock(text) {
+  if (typeof text !== "string") return [];
+  let plan = [], active = false;
+  for (const line of text.split(/\r?\n/)) {
+    if (/^\s*PLAN:\s*$/.test(line)) { plan = []; active = true; continue; }
+    if (!active || !line.trim()) continue;
+    const item = /^\s*- \[([ xX])\]\s+(.+?)\s*$/.exec(line);
+    if (!item) { active = false; continue; }
+    plan.push({ text: item[2], done: item[1].toLowerCase() === "x" });
+  }
+  return plan;
+}
+
 async function eventSlice(file, from = 0) {
   const text = await read(file) || "";
   const physical = text ? text.split(/\r?\n/) : [];
@@ -136,7 +149,14 @@ export function createServer({ dir = defaultStatusDir() } = {}) {
           return json(200, await eventSlice(path.join(dir, `${slug}.events.jsonl`), Number(from)));
         }
         const [report, spec_text, log] = await Promise.all([read(path.join(dir, `${slug}.report.txt`)), lane.mode === "analyze" ? Promise.resolve(lane.spec || null) : typeof lane.spec === "string" ? read(lane.spec) : null, logTail(lane.log_file || path.join(dir, `${slug}.log`))]);
-        return json(200, { ...await enriched(lane), report, spec_text, log, watch: `node "${path.join(HERE, "lane-status.mjs")}" --watch --dir "${dir}"` });
+        const { events } = await eventSlice(path.join(dir, `${slug}.events.jsonl`));
+        let derived_plan = [];
+        if (!events.some((event) => event.item?.type === "todo_list")) {
+          for (const event of events) {
+            if (event.item?.type === "agent_message" && /^\s*PLAN:\s*$/m.test(event.item.text || "")) derived_plan = parsePlanBlock(event.item.text);
+          }
+        }
+        return json(200, { ...await enriched(lane), derived_plan, report, spec_text, log, watch: `node "${path.join(HERE, "lane-status.mjs")}" --watch --dir "${dir}"` });
       }
       json(404, { error: "Not found" });
     } catch { json(500, { error: "Unable to read lane data" }); }
